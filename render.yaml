@@ -1,0 +1,16 @@
+# Render.com one-click blueprint for GE Actividades
+# Deploy: Render dashboard → New + → Blueprint → point at this repo.
+services:
+  - type: web
+    name: ge-actividades
+    runtime: node
+    plan: free          # change to "starter" for always-on + persistent disk
+    startCommand: node ge-server.js
+    buildCommand: ""
+    healthCheckPath: /api/health
+    autoDeploy: true
+    # Uncomment for the paid tier to keep photos/data across restarts:
+    # disk:
+    #   name: ge-data
+    #   mountPath: /opt/data/workspace/ge-actividades/data
+    #   sizeGB: 1
