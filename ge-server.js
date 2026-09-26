@@ -23,7 +23,7 @@ const PORT = parseInt(process.env.PORT || '8080', 10);
 function nowISO() { return new Date().toISOString(); }
 
 function freshData() {
-  return { meta: { seq: 0, createdAt: nowISO() }, users: [], tasks: [], updates: [], schedule: [], log: [], events: [], sessions: {} };
+  return { meta: { seq: 0, createdAt: nowISO() }, users: [], tasks: [], updates: [], schedule: [], log: [], events: [], milestones: [], sessions: {} };
 }
 
 let data = freshData();
@@ -185,6 +185,7 @@ function logVisibleTo(u, e) {
     if (e.userIds && e.userIds.includes(u.id)) return true;
     return false;
   }
+  if (e.type === 'milestone_created' || e.type === 'milestone_deleted') return true;
   if (e.type === 'user_created' || e.type === 'user_updated') return false;
   if (e.taskId) {
     const t = data.tasks.find(x => x.id === e.taskId);
@@ -269,7 +270,10 @@ function cleanupFiles() {
   try {
     if (!fs.existsSync(FILES_DIR)) return;
     const referenced = new Set();
-    for (const up of data.updates) if (up.photo) referenced.add(path.basename(up.photo));
+    for (const up of data.updates) {
+      if (up.photo) referenced.add(path.basename(up.photo));
+      for (const p of (up.photos || [])) referenced.add(path.basename(p));
+    }
     const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
     for (const f of fs.readdirSync(FILES_DIR)) {
       if (referenced.has(f)) continue;
@@ -422,6 +426,17 @@ route('DELETE', /^\/api\/users\/([a-z0-9]+)$/, async (req, res, m, u) => {
 
 /* ---- tasks ---- */
 
+/* Checklist: lines starting with "[ ] " or "☐ " are checkable items.
+   A task whose desc contains checklist items auto-completes when all are checked. */
+function parseChecklist(desc) {
+  const items = [];
+  (desc || '').split('\n').forEach((line, i) => {
+    const m = /^\s*(?:\[[ xX]\]|☐|☑)\s+(.*)$/.exec(line);
+    if (m) items.push({ id: 'c' + (i + 1), text: m[1].trim().slice(0, 300), done: false, doneBy: null, doneAt: null });
+  });
+  return items;
+}
+
 route('POST', /^\/api\/tasks$/, async (req, res, m, u) => {
   if (!u) return bad(res, 401, 'No autenticado');
   if (!isManager(u)) return bad(res, 403, 'MANAGERS_ONLY');
@@ -434,10 +449,11 @@ route('POST', /^\/api\/tasks$/, async (req, res, m, u) => {
   if (!title) return bad(res, 400, 'NEED_TITLE');
   const target = data.users.find(x => x.id === assignee && x.active !== false);
   if (!target) return bad(res, 400, 'BAD_ASSIGNEE');
+  const checklist = parseChecklist(desc);
   const t = {
     id: nextId('t'), title, desc, assignee: target.id, priority, due,
     status: 'pending', createdBy: u.id, createdAt: nowISO(), updatedAt: nowISO(),
-    completedAt: null, completedBy: null,
+    completedAt: null, completedBy: null, checklist,
   };
   data.tasks.push(t);
   logEvent('task_created', u.id, { taskId: t.id, taskTitle: title, assigneeName: target.name });
@@ -453,6 +469,26 @@ function withNames(t) {
     completedByName: t.completedBy ? userName(t.completedBy) : null,
     updateCount: data.updates.filter(x => x.taskId === t.id).length,
   });
+}
+
+/* Checklist state helper: recompute status from items. All done → done. */
+function syncChecklistStatus(t, actor) {
+  if (!t.checklist || !t.checklist.length) return false;
+  const allDone = t.checklist.every(c => c.done);
+  const prev = t.status;
+  if (allDone && t.status !== 'done') {
+    t.status = 'done'; t.completedAt = nowISO(); t.completedBy = actor.id;
+    logEvent('task_completed', actor.id, { taskId: t.id, taskTitle: t.title, viaChecklist: true });
+    emitEvent('task.status', { title: t.title, taskId: t.id, from: prev, to: 'done', by: actor.name, assignee: userName(t.assignee) },
+      { users: [t.assignee, t.createdBy], roles: ['admin', 'subadmin'] }, actor.id);
+    return true;
+  }
+  if (!allDone && t.status === 'done') {
+    t.status = 'pending'; t.completedAt = null; t.completedBy = null;
+    logEvent('task_reopened', actor.id, { taskId: t.id, taskTitle: t.title, viaChecklist: true });
+    return true;
+  }
+  return false;
 }
 
 route('GET', /^\/api\/tasks$/, async (req, res, m, u) => {
@@ -546,6 +582,25 @@ route('DELETE', /^\/api\/tasks\/([a-z0-9]+)$/, async (req, res, m, u) => {
 
 /* ---- updates on tasks ---- */
 
+/* Toggle one checklist item. Assignee or manager. Auto-completes task when all done. */
+route('POST', /^\/api\/tasks\/([a-z0-9]+)\/check$/, async (req, res, m, u) => {
+  if (!u) return bad(res, 401, 'No autenticado');
+  const t = data.tasks.find(x => x.id === m[1]);
+  if (!t || !canSeeTask(u, t)) return bad(res, 404, 'NOT_FOUND');
+  if (!isManager(u) && t.assignee !== u.id) return bad(res, 403, 'FORBIDDEN');
+  const body = await readJSON(req, 16 * 1024);
+  const item = (t.checklist || []).find(c => c.id === body.itemId);
+  if (!item) return bad(res, 404, 'NO_ITEM');
+  item.done = !item.done;
+  item.doneBy = item.done ? u.id : null;
+  item.doneAt = item.done ? nowISO() : null;
+  if (item.done) logEvent('check_done', u.id, { taskId: t.id, taskTitle: t.title, itemText: item.text.slice(0, 80) });
+  syncChecklistStatus(t, u);
+  t.updatedAt = nowISO(); save();
+  sseBroadcast({ type: 'sync' });
+  send(res, 200, { task: withNames(t) });
+});
+
 route('POST', /^\/api\/tasks\/([a-z0-9]+)\/updates$/, async (req, res, m, u) => {
   if (!u) return bad(res, 401, 'No autenticado');
   const t = data.tasks.find(x => x.id === m[1]);
@@ -553,20 +608,21 @@ route('POST', /^\/api\/tasks\/([a-z0-9]+)\/updates$/, async (req, res, m, u) => 
   if (!isManager(u) && t.assignee !== u.id) return bad(res, 403, 'FORBIDDEN');
   const body = await readJSON(req, 2 * 1024 * 1024);
   const text = String(body.text || '').trim().slice(0, 2000);
-  const photo = typeof body.photo === 'string' && body.photo.startsWith('/files/') ? body.photo : null;
-  if (isManager(u) && !text) return bad(res, 400, 'NEED_TEXT');
-  if (!text && !photo) return bad(res, 400, 'NEED_CONTENT');
-  const up = { id: nextId('up'), taskId: t.id, authorId: u.id, text, photo, ts: nowISO() };
+  const photos = Array.isArray(body.photos) ? body.photos.filter(p => typeof p === 'string' && p.startsWith('/files/')).slice(0, 20) : [];
+  const photo = typeof body.photo === 'string' && body.photo.startsWith('/files/') ? body.photo : (photos[0] || null);
+  if (isManager(u) && !text && !photos.length) return bad(res, 400, 'NEED_TEXT');
+  if (!text && !photos.length) return bad(res, 400, 'NEED_CONTENT');
+  const up = { id: nextId('up'), taskId: t.id, authorId: u.id, text, photo, photos, ts: nowISO() };
   data.updates.push(up);
-  logEvent('update_added', u.id, { taskId: t.id, taskTitle: t.title, hasPhoto: !!photo, excerpt: text.slice(0, 80) });
-  emitEvent('update.new', { title: t.title, taskId: t.id, by: u.name, hasPhoto: !!photo, excerpt: text.slice(0, 80) },
+  logEvent('update_added', u.id, { taskId: t.id, taskTitle: t.title, hasPhoto: photos.length > 0, photoCount: photos.length, excerpt: text.slice(0, 80) });
+  emitEvent('update.new', { title: t.title, taskId: t.id, by: u.name, hasPhoto: photos.length > 0, excerpt: text.slice(0, 80) },
     { users: [t.assignee, t.createdBy], roles: ['admin', 'subadmin'] }, u.id);
   t.updatedAt = nowISO(); save();
   sseBroadcast({ type: 'sync' });
   send(res, 200, { update: Object.assign({}, up, { authorName: u.name }) });
 });
 
-/* ---- photo upload ---- */
+/* ---- photo / file upload (all roles) ---- */
 
 route('POST', /^\/api\/upload$/, async (req, res, m, u) => {
   if (!u) return bad(res, 401, 'No autenticado');
@@ -582,6 +638,65 @@ route('POST', /^\/api\/upload$/, async (req, res, m, u) => {
   fs.writeFileSync(path.join(FILES_DIR, name), buf);
   save();
   send(res, 200, { url: '/files/' + name });
+});
+
+/* ---- milestones (events: harvest, cutting, drying...) — no check-off, visual only ---- */
+
+route('GET', /^\/api\/milestones$/, async (req, res, m, u) => {
+  if (!u) return bad(res, 401, 'No autenticado');
+  const list = data.milestones
+    .map(x => Object.assign({}, x, { createdByName: userName(x.createdBy) }))
+    .sort((a, b) => (a.date + (a.start || '')).localeCompare(b.date + (b.start || '')));
+  send(res, 200, { milestones: list });
+});
+
+route('POST', /^\/api\/milestones$/, async (req, res, m, u) => {
+  if (!u) return bad(res, 401, 'No autenticado');
+  if (!isManager(u)) return bad(res, 403, 'MANAGERS_ONLY');
+  const body = await readJSON(req, 128 * 1024);
+  const title = String(body.title || '').trim().slice(0, 120);
+  const date = String(body.date || '');
+  const start = /^\d{2}:\d{2}$/.test(String(body.start || '')) ? body.start : null;
+  const notes = String(body.notes || '').trim().slice(0, 1000);
+  const color = ['purple', 'orange', 'green', 'red'].includes(body.color) ? body.color : 'purple';
+  if (!title) return bad(res, 400, 'NEED_TITLE');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return bad(res, 400, 'BAD_DATE');
+  const mi = { id: nextId('m'), title, date, start, notes, color, createdBy: u.id, createdAt: nowISO() };
+  data.milestones.push(mi);
+  logEvent('milestone_created', u.id, { milestoneTitle: title, date, start });
+  save(); sseBroadcast({ type: 'sync' });
+  send(res, 200, { milestone: mi });
+});
+
+route('PATCH', /^\/api\/milestones\/([a-z0-9]+)$/, async (req, res, m, u) => {
+  if (!u) return bad(res, 401, 'No autenticado');
+  if (!isManager(u)) return bad(res, 403, 'MANAGERS_ONLY');
+  const mi = data.milestones.find(x => x.id === m[1]);
+  if (!mi) return bad(res, 404, 'NOT_FOUND');
+  const body = await readJSON(req, 128 * 1024);
+  if (body.title !== undefined) {
+    const title = String(body.title).trim().slice(0, 120);
+    if (!title) return bad(res, 400, 'NEED_TITLE');
+    mi.title = title;
+  }
+  if (body.date !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(String(body.date))) mi.date = body.date;
+  if (body.start !== undefined) mi.start = /^\d{2}:\d{2}$/.test(String(body.start)) ? body.start : null;
+  if (body.notes !== undefined) mi.notes = String(body.notes).trim().slice(0, 1000);
+  if (body.color !== undefined && ['purple', 'orange', 'green', 'red'].includes(body.color)) mi.color = body.color;
+  save(); sseBroadcast({ type: 'sync' });
+  send(res, 200, { milestone: mi });
+});
+
+route('DELETE', /^\/api\/milestones\/([a-z0-9]+)$/, async (req, res, m, u) => {
+  if (!u) return bad(res, 401, 'No autenticado');
+  if (!isManager(u)) return bad(res, 403, 'MANAGERS_ONLY');
+  const i = data.milestones.findIndex(x => x.id === m[1]);
+  if (i === -1) return bad(res, 404, 'NOT_FOUND');
+  const mi = data.milestones[i];
+  data.milestones.splice(i, 1);
+  logEvent('milestone_deleted', u.id, { milestoneTitle: mi.title, date: mi.date });
+  save(); sseBroadcast({ type: 'sync' });
+  send(res, 200, { ok: true });
 });
 
 /* ---- schedule ---- */
@@ -715,7 +830,7 @@ route('GET', /^\/api\/events$/, async (req, res, m, u) => {
 });
 
 route('GET', /^\/api\/health$/, async (req, res) => {
-  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.2', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
+  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.3', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
 });
 
 /* ------------------------------------------------------------- server -- */
@@ -781,7 +896,7 @@ function main() {
   loadSessions();
   bootstrapSeed();
   server.listen(PORT, () => {
-    console.log('GE Actividades v1.2 en http://localhost:' + PORT);
+    console.log('GE Actividades v1.3 en http://localhost:' + PORT);
   });
 }
 

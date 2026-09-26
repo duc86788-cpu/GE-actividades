@@ -119,15 +119,21 @@
   .cal-nav{width:38px;height:38px;border-radius:50%;background:var(--chip);display:flex;align-items:center;justify-content:center;font-size:16px}
   .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:6px}
   .cal-dow{text-align:center;font-size:11px;font-weight:700;color:var(--muted);padding:4px 0;text-transform:uppercase}
-  .cal-cell{aspect-ratio:1;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:14px;font-weight:600;position:relative;background:var(--bg);color:var(--ink)}
+  .cal-cell{aspect-ratio:1;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:14px;font-weight:600;position:relative;background:var(--bg);color:var(--ink);touch-action:manipulation;user-select:none}
   .cal-cell.other{opacity:.3}
   .cal-cell.today{outline:2px solid var(--brand);outline-offset:-2px}
   .cal-cell.sel{background:var(--brand);color:#fff}
+  .cal-cell.has-ev{background:#f3e8ff}
+  .cal-cell.sel.has-ev{background:#7c3aed}
   .cal-cell .dots{position:absolute;bottom:4px;display:flex;gap:2px}
   .cal-cell .dots .d{width:4px;height:4px;border-radius:50%;background:var(--brand)}
   .cal-cell.sel .dots .d{background:#fff}
   .cal-cell .dots .d.done{background:var(--ok)}
   .cal-cell.sel .dots .d.done{background:#bbf7d0}
+  .cal-cell .dots .d.ev{background:#7c3aed}
+  .cal-cell.sel .dots .d.ev{background:#e9d5ff}
+  .openday{width:100%;background:var(--brand);color:#fff;border-radius:12px;padding:13px;font-weight:700;font-size:15px;margin:4px 0 16px;box-shadow:0 3px 10px rgba(37,99,235,.35)}
+  .openday:active{background:var(--brand2)}
 
   /* day view */
   .day-back{display:flex;align-items:center;gap:8px;margin-bottom:14px;color:var(--brand);font-weight:600;font-size:14px}
@@ -139,6 +145,38 @@
   .timeline-item .ti-body{flex:1;min-width:0}
   .timeline-item .ti-icon{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;background:var(--chip)}
   .tl-task{border-left:3px solid var(--brand);padding-left:12px}
+  .tl-ev{border-left:3px solid #7c3aed;padding-left:12px}
+
+  /* collapsible responses in day view */
+  .resp-toggle{cursor:pointer}
+  .resp-wrap{overflow:hidden;transition:max-height .25s ease;max-height:0}
+  .resp-wrap.open{max-height:1200px;overflow-y:auto}
+  .chev{font-size:11px;color:var(--muted);transition:transform .2s}
+  .resp-toggle.open .chev{transform:rotate(90deg)}
+
+  /* checklist */
+  .ckrow{display:flex;align-items:flex-start;gap:10px;padding:8px 0}
+  .ckrow .ckbox{width:22px;height:22px;border-radius:6px;border:2px solid var(--muted);background:#fff;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:14px;color:#fff;font-weight:800}
+  .ckrow.done .ckbox{background:var(--ok);border-color:var(--ok)}
+  .ckrow.done .cktext{text-decoration:line-through;color:var(--muted)}
+  .ckrow .cktext{flex:1;padding-top:1px}
+  .ckrow .ckmeta{font-size:11px;color:var(--muted)}
+  .ckbar{height:5px;border-radius:3px;background:var(--chip);overflow:hidden;margin:8px 0 4px}
+  .ckbar div{height:100%;background:var(--ok);transition:width .25s}
+
+  /* camera */
+  #cam-view{position:fixed;inset:0;background:#000;z-index:80;display:flex;flex-direction:column}
+  #cam-view video{flex:1;object-fit:contain;width:100%}
+  .cam-bar{display:flex;justify-content:space-around;align-items:center;padding:16px 0 calc(16px + env(safe-area-inset-bottom));background:#000}
+  .cam-btn{width:64px;height:64px;border-radius:50%;background:#fff;border:4px solid rgba(255,255,255,.4)}
+  .cam-btn:active{transform:scale(.92)}
+  .cam-x{position:absolute;top:14px;right:14px;width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.2);color:#fff;font-size:18px;z-index:2}
+  .cam-ts{position:absolute;bottom:110px;left:0;right:0;text-align:center;color:#fff;font-weight:700;font-size:15px;text-shadow:0 1px 4px rgba(0,0,0,.9);pointer-events:none}
+  .shotPrev{position:relative;display:inline-block;margin:6px 6px 0 0}
+  .shotPrev img{width:74px;height:74px;object-fit:cover;border-radius:10px}
+  .shotPrev button{position:absolute;top:-8px;right:-8px;width:24px;height:24px;border-radius:50%;background:var(--bad);color:#fff;font-size:12px}
+  .multiPrev{display:flex;flex-wrap:wrap}
+  .ev-badge{display:inline-flex;align-items:center;gap:5px;background:#f3e8ff;color:#6b21a8;border-radius:6px;padding:2px 8px;font-size:11.5px;font-weight:700}
 
   /* team */
   .userrow{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid var(--line)}
@@ -211,12 +249,14 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp
 let token = localStorage.getItem('ge_token') || '';
 let LANG = localStorage.getItem('ge_lang') || '';
 let ME = null;
-let TASKS = [], USERS = [], SCHEDULE = [], LOG = [];
+let TASKS = [], USERS = [], SCHEDULE = [], LOG = [], MILES = [];
 let tab = 'calendar';
 let taskFilter = 'open';
 let evSource = null;
 let calMonth = new Date(); calMonth.setDate(1);
 let calSelected = new Date().toISOString().slice(0,10);
+let dayOpen = false;      // full-screen day view open
+let dayExpanded = {};     // itemId -> responses expanded
 
 const STR = {
   es: {
@@ -272,7 +312,22 @@ const STR = {
     n_scheduled:' te agendó: ', n_newAccount:'Nueva cuenta: ',
     confirmDelUser:'¿Eliminar a', userDeletedMsg:'Usuario eliminado',
     cannotDeleteSelf:'No puedes eliminar tu propia cuenta',
-    version:'GE Actividades · v1.2',
+    version:'GE Actividades · v1.3',
+    openDay:'Abrir el día', backToCal:'‹ Volver al calendario',
+    eventsForDay:'Eventos', noEvents:'Sin eventos este día.',
+    newEvent:'Nuevo evento', eventTitle:'Evento (ej. Cosecha, Corte, Secado)',
+    eventDate:'Fecha del evento', eventTime:'Hora (opcional)', evColor:'Color',
+    eventCreated:'Evento creado ✅', eventDeleted:'Evento eliminado',
+    milestoneCreated2:'Evento programado', milestoneDeleted2:'Evento eliminado',
+    ev_purple:'Morado', ev_orange:'Naranja', ev_green:'Verde', ev_red:'Rojo',
+    responses:'Respuestas', tapToSee:'Toca para ver respuestas', hide:'Ocultar respuestas',
+    checkItem:'Toca para marcar hecho', doneBy:'hecho por', checkedAt:'✓',
+    checklist:'Lista de tareas', ckProgress:'completado',
+    camera:'📸 Cámara', gallery:'🖼️ Galería', takePhoto:'Tomar foto',
+    photosUploading:'Subiendo fotos…', photoCount:'foto(s)',
+    camNotAvailable:'La cámara no está disponible en este dispositivo',
+    taskAutoDone:'¡Todas las casillas marcadas — tarea completada! 🎉',
+    ckWho:'por', noChecklist:null,
   },
   en: {
     subtitle:'Tasks, updates and schedules for your team',
@@ -327,7 +382,22 @@ const STR = {
     n_scheduled:' scheduled you: ', n_newAccount:'New account: ',
     confirmDelUser:'Delete', userDeletedMsg:'User deleted',
     cannotDeleteSelf:'You cannot delete your own account',
-    version:'GE Actividades · v1.2',
+    version:'GE Actividades · v1.3',
+    openDay:'Open day', backToCal:'‹ Back to calendar',
+    eventsForDay:'Events', noEvents:'No events this day.',
+    newEvent:'New event', eventTitle:'Event (e.g. Harvest, Cutting, Drying)',
+    eventDate:'Event date', eventTime:'Time (optional)', evColor:'Color',
+    eventCreated:'Event created ✅', eventDeleted:'Event deleted',
+    milestoneCreated2:'Event scheduled', milestoneDeleted2:'Event deleted',
+    ev_purple:'Purple', ev_orange:'Orange', ev_green:'Green', ev_red:'Red',
+    responses:'Responses', tapToSee:'Tap to see responses', hide:'Hide responses',
+    checkItem:'Tap to mark done', doneBy:'done by', checkedAt:'✓',
+    checklist:'Checklist', ckProgress:'done',
+    camera:'📸 Camera', gallery:'🖼️ Gallery', takePhoto:'Take photo',
+    photosUploading:'Uploading photos…', photoCount:'photo(s)',
+    camNotAvailable:'Camera not available on this device',
+    taskAutoDone:'All boxes checked — task completed! 🎉',
+    ckWho:'by', noChecklist:null,
   },
 };
 function t(k){ return (STR[LANG] && STR[LANG][k]) || k; }
@@ -441,10 +511,10 @@ function connectEvents() {
 async function refreshAll() {
   if (!ME) return;
   try {
-    const jobs = [api('/api/tasks'), api('/api/notifications'), api('/api/log'), api('/api/schedule')];
+    const jobs = [api('/api/tasks'), api('/api/notifications'), api('/api/log'), api('/api/schedule'), api('/api/milestones')];
     if (isManager()) jobs.push(api('/api/users'));
-    const [t1, n, lg, sc, u] = await Promise.all(jobs);
-    TASKS = t1.tasks; LOG = lg.log; SCHEDULE = sc.schedule;
+    const [t1, n, lg, sc, mi, u] = await Promise.all(jobs);
+    TASKS = t1.tasks; LOG = lg.log; SCHEDULE = sc.schedule; MILES = mi.milestones;
     if (u) USERS = u.users;
     renderBell(n.unread); render();
   } catch(e) { if (e.status === 401) logout(); }
@@ -479,7 +549,8 @@ function buildNav() {
 /* ---------------- render root ---------------- */
 function render() {
   const m = $('#main'); m.innerHTML = '';
-  if (tab === 'calendar') renderCalendar(m);
+  if (tab === 'calendar' && dayOpen) renderDayView(m);
+  else if (tab === 'calendar') renderCalendar(m);
   else if (tab === 'tasks') renderTasks(m);
   else if (tab === 'team') renderTeam(m);
   else if (tab === 'me') renderMe(m);
@@ -510,11 +581,12 @@ function renderCalendar(m) {
   const grid2 = el('div','cal-grid');
   const todayStr = new Date().toISOString().slice(0,10);
 
-  // Build a map of date -> {hasTask, hasDone, hasActivity}
+  // Build a map of date -> {hasTask, hasDone, hasActivity, hasEv}
   const dayMap = {};
   const addDay = (d, type) => { (dayMap[d] = dayMap[d] || {})[type] = true; };
   TASKS.forEach(t2 => { if (t2.due) addDay(t2.due, t2.status === 'done' ? 'done' : 'task'); });
   LOG.forEach(e => { addDay((e.ts||'').slice(0,10), 'activity'); });
+  MILES.forEach(mi => { addDay(mi.date, 'ev'); });
 
   // prev month padding
   for (let i = startDow - 1; i >= 0; i--) {
@@ -523,15 +595,17 @@ function renderCalendar(m) {
   for (let d = 1; d <= daysInMonth; d++) {
     const dStr = y + '-' + pad2(mo+1) + '-' + pad2(d);
     const info = dayMap[dStr] || {};
-    const cls = 'cal-cell' + (dStr === todayStr ? ' today' : '') + (dStr === calSelected ? ' sel' : '');
+    const cls = 'cal-cell' + (dStr === todayStr ? ' today' : '') + (dStr === calSelected ? ' sel' : '') + (info.ev ? ' has-ev' : '');
     const cell = el('div', cls, String(d));
-    if (info.task || info.done || info.activity) {
+    if (info.task || info.done || info.activity || info.ev) {
       const dots = el('div','dots');
       if (info.task) dots.appendChild(el('div','d'));
       if (info.done) dots.appendChild(el('div','d done'));
-      if (info.activity && !info.task && !info.done) dots.appendChild(el('div','d'));
+      if (info.ev) dots.appendChild(el('div','d ev'));
+      if (info.activity && !info.task && !info.done && !info.ev) dots.appendChild(el('div','d'));
       cell.appendChild(dots);
     }
+    // SINGLE TAP: select + show quick list at bottom of homepage
     cell.onclick = () => { calSelected = dStr; render(); };
     grid2.appendChild(cell);
   }
@@ -541,15 +615,68 @@ function renderCalendar(m) {
   for (let d = 1; d <= remain; d++) grid2.appendChild(el('div','cal-cell other', String(d)));
   m.appendChild(grid2);
 
-  // Day view for calSelected
-  renderDayView(m);
+  // Open-day button under the grid
+  const ob = el('button','openday', '📆 ' + t('openDay') + ' — ' + fmtDateShort(calSelected));
+  ob.onclick = () => { dayOpen = true; render(); };
+  m.appendChild(ob);
+
+  // Selected day: quick list at the bottom of the homepage
+  renderDaySummary(m);
 }
 
+/* Quick list of the selected day at the bottom of the homepage (single tap) */
+function renderDaySummary(m) {
+  const ds = calSelected;
+  const dayTasks = TASKS.filter(t2 => t2.due === ds);
+  const dayEvs = MILES.filter(mi => mi.date === ds);
+  if (!dayTasks.length && !dayEvs.length) {
+    m.appendChild(el('div','small muted', fmtDate(ds) + ' · ' + t('noTasks')));
+    return;
+  }
+  m.appendChild(el('div','sect', fmtDate(ds)));
+  dayEvs.forEach(mi => {
+    const c = el('div','card tl-ev');
+    c.innerHTML = '<div class="row"><span>🎉</span><div class="grow"><div style="font-weight:700">' + esc(mi.title) + '</div>' +
+      '<div class="meta-line">' + t('milestoneCreated2') + ' ' + t('by') + ' ' + esc(mi.createdByName||'') +
+      (mi.start ? ' · ' + mi.start : '') + '</div></div></div>';
+    c.onclick = () => { dayOpen = true; render(); };
+    m.appendChild(c);
+  });
+  dayTasks.forEach(t2 => {
+    const card = el('div','card tl-task');
+    const mine = t2.assignee === ME.id;
+    let html = '<div class="row" style="align-items:flex-start">' +
+      '<div class="prio p-' + esc(t2.priority) + '" style="margin-top:7px"></div>' +
+      '<div class="grow">' +
+        '<div style="font-weight:700">' + esc(t2.title) + '</div>' +
+        '<div class="meta-line">' + t('assignedTo2') + ' <b>' + esc(t2.assigneeName) + '</b>' + (mine ? ' ' + t('you') : '') + '</div>' +
+        '<div class="meta-line">' + t('createdFrom') + ' ' + esc(t2.createdByName) + ' · ' + fmtTs(t2.createdAt) + '</div>';
+    if (t2.status === 'done') {
+      html += '<div class="meta-line" style="color:var(--ok)">' + t('completedAt') + ' ' + fmtTs(t2.completedAt) + ' ' + t('completedBy') + ' ' + esc(t2.completedByName||'—') + '</div>';
+    }
+    html += '</div><span class="badge b-' + esc(t2.status) + '">' + stEs(t2.status) + '</span></div>';
+    card.innerHTML = html;
+    card.onclick = () => openTask(t2.id);
+    m.appendChild(card);
+  });
+}
+
+/* ============ FULL-SCREEN DAY VIEW (Open day) ============ */
 function renderDayView(m) {
   const ds = calSelected;
+  const back = el('button','day-back', t('backToCal'));
+  back.onclick = () => { dayOpen = false; dayExpanded = {}; render(); };
+  m.appendChild(back);
   m.appendChild(el('div','day-date', fmtDate(ds)));
 
-  // Tasks due this day
+  // Events first
+  const dayEvs = MILES.filter(mi => mi.date === ds);
+  if (dayEvs.length) {
+    m.appendChild(el('div','sect', t('eventsForDay')));
+    dayEvs.forEach(mi => m.appendChild(milestoneCard(mi)));
+  }
+
+  // Tasks with collapsible responses
   const dayTasks = TASKS.filter(t2 => t2.due === ds);
   m.appendChild(el('div','sect', t('tasksForDay')));
   if (!dayTasks.length) {
@@ -568,37 +695,122 @@ function renderDayView(m) {
   }
 }
 
+function milestoneCard(mi) {
+  const c = el('div','card tl-ev');
+  const COLOR = {purple:'#7c3aed', orange:'#ea580c', green:'#16a34a', red:'#dc2626'};
+  c.innerHTML = '<div class="row" style="align-items:flex-start">' +
+    '<div style="width:8px;height:8px;border-radius:50%;background:' + (COLOR[mi.color]||COLOR.purple) + ';margin-top:7px"></div>' +
+    '<div class="grow">' +
+      '<div style="font-weight:700">🎉 ' + esc(mi.title) + '</div>' +
+      '<div class="meta-line">' + t('milestoneCreated2') + ' ' + fmtTs(mi.createdAt) + ' ' + t('by') + ' ' + esc(mi.createdByName||'—') + '</div>' +
+      (mi.start ? '<div class="meta-line">🕐 ' + mi.start + '</div>' : '') +
+      (mi.notes ? '<div class="small" style="margin-top:6px;white-space:pre-wrap">' + esc(mi.notes) + '</div>' : '') +
+    '</div><span class="ev-badge">EVENTO</span></div>';
+  return c;
+}
+
+/* Task card in the day view — clean; responses hidden until tapped */
 function dayTaskCard(t2) {
   const c = el('div','card tl-task');
   const mine = t2.assignee === ME.id;
+  const ck = t2.checklist || [];
+  const ckDone = ck.filter(x => x.done).length;
   let html = '<div class="row" style="align-items:flex-start">' +
     '<div class="prio p-' + esc(t2.priority) + '" style="margin-top:7px"></div>' +
     '<div class="grow">' +
       '<div style="font-weight:700">' + esc(t2.title) + '</div>' +
       '<div class="meta-line">' + t('assignedTo2') + ' <b>' + esc(t2.assigneeName) + '</b>' + (mine ? ' ' + t('you') : '') + '</div>' +
-      '<div class="meta-line">' + t('createdFrom') + ' ' + esc(t2.createdByName) + '</div>';
-  // creation time
-  html += '<div class="meta-line">' + t('taskCreated2') + ' ' + fmtTs(t2.createdAt) + '</div>';
+      '<div class="meta-line">' + t('createdFrom') + ' ' + esc(t2.createdByName) + ' · ' + fmtTs(t2.createdAt) + '</div>';
   if (t2.status === 'done') {
     html += '<div class="meta-line" style="color:var(--ok)">' + t('completedAt') + ' ' + fmtTs(t2.completedAt) + ' ' + t('completedBy') + ' ' + esc(t2.completedByName||'—') + '</div>';
   }
+  if (ck.length) {
+    html += '<div class="ckbar"><div style="width:' + Math.round(ckDone/ck.length*100) + '%"></div></div>' +
+      '<div class="meta-line">' + ckDone + '/' + ck.length + ' ' + t('ckProgress') + '</div>';
+  }
   html += '</div><span class="badge b-' + esc(t2.status) + '">' + stEs(t2.status) + '</span></div>';
   c.innerHTML = html;
-  c.onclick = () => openTask(t2.id);
+
+  // checklist rows (always visible for assignee/manager — the working surface)
+  if (ck.length && (isManager() || mine)) {
+    ck.forEach(item => c.appendChild(ckRow(t2, item)));
+  }
+
+  // collapsible responses
+  const key = t2.id;
+  const tog = el('div','resp-toggle');
+  const isOpen = !!dayExpanded[key];
+  tog.innerHTML = '<div class="row small muted" style="padding:8px 0 0"><span class="chev">▶</span> ' +
+    (isOpen ? t('hide') : t('tapToSee') + ' (' + (t2.updateCount||0) + ')') + '</div>';
+  const wrap = el('div','resp-wrap' + (isOpen ? ' open' : ''));
+  if (isOpen) fillResponses(wrap, t2.id);
+  tog.onclick = () => {
+    dayExpanded[key] = !dayExpanded[key];
+    if (dayExpanded[key]) { wrap.classList.add('open'); fillResponses(wrap, t2.id); tog.classList.add('open'); }
+    else { wrap.classList.remove('open'); wrap.innerHTML = ''; tog.classList.remove('open'); }
+    const lbl = tog.querySelector('.row');
+    lbl.innerHTML = '<span class="chev">▶</span> ' + (dayExpanded[key] ? t('hide') : t('tapToSee') + ' (' + (t2.updateCount||0) + ')');
+  };
+  tog.classList.toggle('open', isOpen);
+  c.appendChild(tog); c.appendChild(wrap);
+  // open full task detail on title tap
+  c.querySelector('.row').onclick = () => openTask(t2.id);
   return c;
+}
+
+async function fillResponses(wrap, taskId) {
+  wrap.innerHTML = '<div class="small muted" style="padding:6px 0">…</div>';
+  try {
+    const d = await api('/api/tasks/' + taskId);
+    wrap.innerHTML = '';
+    if (!d.updates.length) wrap.appendChild(el('div','small muted', '—'));
+    d.updates.forEach(u2 => {
+      const r = el('div','upd');
+      r.innerHTML = '<div class="avatar">' + esc(initials(u2.authorName)) + '</div>' +
+        '<div class="bubble"><div class="small"><b>' + esc(u2.authorName) + '</b> <span class="muted">· ' + fmtTs(u2.ts) + '</span></div>' +
+        (u2.text ? '<div style="white-space:pre-wrap;margin-top:2px">' + esc(u2.text) + '</div>' : '') +
+        ((u2.photos||[]).length ? '<div class="multiPrev">' + u2.photos.map(p => '<img loading="lazy" src="' + esc(p) + '">').join('') + '</div>' : '') +
+        '</div>';
+      wrap.appendChild(r);
+    });
+  } catch(e) { wrap.innerHTML = ''; wrap.appendChild(el('div','small muted', e.message)); }
+}
+
+/* checklist row with live toggle */
+function ckRow(t2, item) {
+  const r = el('div','ckrow' + (item.done ? ' done' : ''));
+  const canCheck = isManager() || t2.assignee === ME.id;
+  r.innerHTML = '<div class="ckbox">' + (item.done ? '✓' : '') + '</div>' +
+    '<div class="grow"><div class="cktext">' + esc(item.text) + '</div>' +
+    (item.done && item.doneAt ? '<div class="ckmeta">' + t('doneBy') + ' ' + esc(item.doneByName || '') + ' · ' + fmtTs(item.doneAt) + '</div>' : '') + '</div>';
+  if (canCheck) {
+    r.onclick = async () => {
+      try {
+        const resp = await api('/api/tasks/' + t2.id + '/check', {method:'POST', body:JSON.stringify({itemId:item.id})});
+        const idx = TASKS.findIndex(x => x.id === t2.id);
+        if (idx > -1) TASKS[idx] = resp.task;
+        const ck2 = resp.task.checklist || [];
+        if (resp.task.status === 'done' && ck2.length && ck2.every(x => x.done)) toast(t('taskAutoDone'));
+        render();
+      } catch(e) { toast(e.message); }
+    };
+  }
+  return r;
 }
 
 function logItem(e) {
   const item = el('div','timeline-item');
   const ICONS = {
     task_created:'📋', task_completed:'✅', task_reopened:'🔄', task_status:'🔄',
-    task_deleted:'🗑', task_reassigned:'👤', update_added:'💬',
+    task_deleted:'🗑', task_reassigned:'👤', update_added:'💬', check_done:'☑️',
     user_created:'👋', user_updated:'✏️', user_deleted:'🗑',
     schedule_created:'📅', schedule_deleted:'🗑',
+    milestone_created:'🎉', milestone_deleted:'🗑',
   };
   let txt = '';
   if (e.type === 'task_created') txt = t('taskCreated2') + ': "' + esc(e.taskTitle) + '" → ' + esc(e.assigneeName);
   else if (e.type === 'task_completed') txt = t('taskCompleted2') + ': "' + esc(e.taskTitle) + '"';
+  else if (e.type === 'check_done') txt = t('checkedAt') + ' "' + esc(e.itemText||'') + '" (' + esc(e.taskTitle||'') + ')';
   else if (e.type === 'task_reopened') txt = t('taskReopened') + ': "' + esc(e.taskTitle) + '"';
   else if (e.type === 'task_status') txt = t('taskReopened') + ': "' + esc(e.taskTitle) + '"';
   else if (e.type === 'task_deleted') txt = t('taskDeleted2') + ': "' + esc(e.taskTitle) + '"';
@@ -609,6 +821,8 @@ function logItem(e) {
   else if (e.type === 'user_deleted') txt = t('userDeleted') + ': ' + esc(e.targetName);
   else if (e.type === 'schedule_created') txt = t('scheduleCreated2') + ': ' + esc(e.scheduleTitle);
   else if (e.type === 'schedule_deleted') txt = t('scheduleDeleted2') + ': ' + esc(e.scheduleTitle);
+  else if (e.type === 'milestone_created') txt = t('milestoneCreated2') + ': ' + esc(e.milestoneTitle) + ' (' + fmtDateShort(e.date) + ')';
+  else if (e.type === 'milestone_deleted') txt = t('milestoneDeleted2') + ': ' + esc(e.milestoneTitle);
   else txt = esc(e.type);
 
   item.innerHTML =
@@ -645,6 +859,8 @@ function renderTasks(m) {
 function taskCard(x) {
   const c = el('div','card');
   const mine = x.assignee === ME.id;
+  const ck = x.checklist || [];
+  const ckDone = ck.filter(i => i.done).length;
   c.innerHTML =
     '<div class="row" style="align-items:flex-start">' +
       '<div class="prio p-' + esc(x.priority) + '" style="margin-top:7px"></div>' +
@@ -655,6 +871,7 @@ function taskCard(x) {
           '<span class="badge b-' + esc(x.status) + '">' + stEs(x.status) + '</span>' +
           (x.due ? '<span class="' + (isOverdue(x)?'overdue':'') + '">📅 ' + fmtDateShort(x.due) + '</span>' : '') +
           (x.updateCount ? '<span>💬 ' + x.updateCount + '</span>' : '') +
+          (ck.length ? '<span>☑️ ' + ckDone + '/' + ck.length + '</span>' : '') +
         '</div>' +
         '<div class="meta-line">👤 ' + esc(x.assigneeName) + (mine ? ' <b style="color:var(--brand)">' + t('you') + '</b>' : '') + '</div>' +
       '</div>' +
@@ -689,8 +906,20 @@ async function openTask(id) {
     '</div>';
   const body = sheet.querySelector('.sheet-body');
 
-  // status buttons
-  const canSet = manager || mine;
+  // checklist (working surface): tap an item to toggle; auto-complete when all done
+  const ck = x.checklist || [];
+  if (ck.length) {
+    const ckDone = ck.filter(i => i.done).length;
+    const wrap = el('div');
+    wrap.appendChild(el('div','sect', t('checklist') + ' — ' + ckDone + '/' + ck.length));
+    const bar = el('div','ckbar','<div style="width:' + Math.round(ckDone/ck.length*100) + '%"></div>');
+    wrap.appendChild(bar);
+    ck.forEach(item => wrap.appendChild(ckRow(x, item)));
+    body.appendChild(wrap);
+  }
+
+  // status buttons (hidden for checklist tasks — status is automatic)
+  const canSet = (manager || mine) && !ck.length;
   if (canSet) {
     let opts;
     if (manager) opts = ['pending','in_progress','done'];
@@ -739,39 +968,50 @@ async function openTask(id) {
     d2.innerHTML = '<div class="avatar">' + esc(initials(u.authorName)) + '</div>' +
       '<div class="bubble"><div class="small"><b>' + esc(u.authorName) + '</b> <span class="muted">· ' + fmtTs(u.ts) + '</span></div>' +
       (u.text ? '<div style="white-space:pre-wrap;margin-top:2px">' + esc(u.text) + '</div>' : '') +
-      (u.photo ? '<img loading="lazy" src="' + esc(u.photo) + '">' : '') +
+      ((u.photos||[]).length ? '<div class="multiPrev">' + u.photos.map(p => '<img loading="lazy" src="' + esc(p) + '">').join('') + '</div>' : '') +
       '</div>';
     body.appendChild(d2);
   });
 
-  // add update
+  // add update — all roles; photos via camera or gallery, up to 20 at once
   const canUpdate = manager || mine;
   if (canUpdate) {
     body.appendChild(el('div','sect', t('addUpdate')));
     const ta = el('textarea'); ta.placeholder = manager ? t('phAdminComment') : t('phEmployee');
     ta.style.width = '100%';
-    let photoUrl = null;
-    const prev = el('div');
-    const photoBtn = el('button','btn btn-ghost btn-sm', t('photo'));
+    let photoUrls = [];
+    const prev = el('div','multiPrev');
+    const camBtn = el('button','btn btn-ghost btn-sm', t('camera'));
+    const galBtn = el('button','btn btn-ghost btn-sm', t('gallery'));
     const sendBtn = el('button','btn btn-primary btn-sm', t('send'));
-    photoBtn.onclick = () => pickPhoto(url => { photoUrl = url; renderPrev(); });
+    camBtn.onclick = () => openCamera(async dataUrl => {
+      if (photoUrls.length >= 20) { toast('20 max'); return; }
+      try {
+        const r = await api('/api/upload', {method:'POST', body:JSON.stringify({dataUrl})});
+        photoUrls.push(r.url); renderPrev();
+      } catch(e) { toast(t('uploadFail') + e.message); }
+    });
+    galBtn.onclick = () => pickPhotos(urls => {
+      urls.forEach(u2 => { if (photoUrls.length < 20) photoUrls.push(u2); });
+      renderPrev();
+    });
     function renderPrev() {
       prev.innerHTML = '';
-      if (photoUrl) {
-        const p = el('div','photoPrev','<img src="' + esc(photoUrl) + '">');
-        const xx = el('button','x','✕'); xx.style.cssText = 'width:26px;height:26px;font-size:12px';
-        xx.onclick = () => { photoUrl = null; renderPrev(); };
-        p.appendChild(xx); prev.appendChild(p);
-      }
+      photoUrls.forEach((p, i) => {
+        const s = el('div','shotPrev','<img src="' + esc(p) + '">');
+        const xx = el('button','x','✕');
+        xx.onclick = () => { photoUrls.splice(i,1); renderPrev(); };
+        s.appendChild(xx); prev.appendChild(s);
+      });
     }
-    const row = el('div','row'); row.append(photoBtn, sendBtn);
+    const row = el('div','row'); row.append(camBtn, galBtn, sendBtn);
     body.append(ta, prev, row);
     sendBtn.onclick = async () => {
       const text = ta.value.trim();
-      if (!text && !photoUrl) { toast(t('writeSomething')); return; }
+      if (!text && !photoUrls.length) { toast(t('writeSomething')); return; }
       sendBtn.disabled = true;
       try {
-        await api('/api/tasks/' + x.id + '/updates', {method:'POST', body:JSON.stringify({text, photo:photoUrl})});
+        await api('/api/tasks/' + x.id + '/updates', {method:'POST', body:JSON.stringify({text, photos:photoUrls})});
         ov.remove(); refreshAll(); toast(t('updatePosted'));
       } catch(e) { toast(e.message); sendBtn.disabled = false; }
     };
@@ -782,19 +1022,67 @@ async function openTask(id) {
   ov.appendChild(sheet); document.body.appendChild(ov);
 }
 
-/* ---------- photo picking ---------- */
-let photoCb = null;
-function pickPhoto(cb) { photoCb = cb; $('#file-in').click(); }
+/* ---------- photo picking: gallery (multi, up to 20) + live camera ---------- */
+let photoMultiCb = null;
+function pickPhotos(cb) { photoMultiCb = cb; $('#file-in').click(); }
+$('#file-in').multiple = true;
+$('#file-in').removeAttribute('accept');
+$('#file-in').setAttribute('accept','image/*');
 $('#file-in').onchange = async e => {
-  const f = e.target.files[0]; e.target.value = '';
-  if (!f || !photoCb) return;
-  toast(t('uploading'));
+  const files = [...e.target.files].slice(0, 20);
+  e.target.value = '';
+  if (!files.length || !photoMultiCb) return;
+  toast(t('photosUploading'));
   try {
-    const dataUrl = await resizeImage(f, 1600, 0.82);
-    const r = await api('/api/upload', {method:'POST', body:JSON.stringify({dataUrl})});
-    photoCb(r.url);
+    const urls = [];
+    for (const f of files) {
+      const dataUrl = await resizeImage(f, 1600, 0.82);
+      const r = await api('/api/upload', {method:'POST', body:JSON.stringify({dataUrl})});
+      urls.push(r.url);
+    }
+    photoMultiCb(urls);
   } catch(err) { toast(t('uploadFail') + err.message); }
 };
+
+/* live camera with burned-in timestamp */
+function openCamera(onShot) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast(t('camNotAvailable')); return; }
+  let stream = null;
+  const view = el('div'); view.id = 'cam-view';
+  view.innerHTML = '<video autoplay playsinline muted></video>' +
+    '<div class="cam-ts" id="cam-ts"></div>' +
+    '<button class="cam-x">✕</button>' +
+    '<div class="cam-bar"><button class="cam-btn" id="cam-shoot"></button></div>';
+  document.body.appendChild(view);
+  const video = view.querySelector('video');
+  const tsEl = view.querySelector('#cam-ts');
+  const tsTimer = setInterval(() => { tsEl.textContent = new Date().toLocaleString(LANG); }, 500);
+  tsEl.textContent = new Date().toLocaleString(LANG);
+  const close = () => { clearInterval(tsTimer); if (stream) stream.getTracks().forEach(tr => tr.stop()); view.remove(); };
+  view.querySelector('.cam-x').onclick = close;
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+    .then(s => { stream = s; video.srcObject = s; })
+    .catch(() => { toast(t('camNotAvailable')); close(); });
+  view.querySelector('#cam-shoot').onclick = () => {
+    if (!stream || !video.videoWidth) return;
+    const cv = document.createElement('canvas');
+    const w = Math.min(1600, video.videoWidth);
+    const h = Math.round(video.videoHeight * (w / video.videoWidth));
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(video, 0, 0, w, h);
+    // burn timestamp into the image
+    const stamp = new Date().toLocaleString(LANG) + ' · GE Actividades';
+    ctx.font = Math.round(w * 0.032) + 'px sans-serif';
+    ctx.fillStyle = 'rgba(0,0,0,.55)';
+    const tw = ctx.measureText(stamp).width;
+    ctx.fillRect(10, h - Math.round(w*0.032) - 22, tw + 20, Math.round(w*0.032) + 16);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(stamp, 20, h - 16);
+    onShot(cv.toDataURL('image/jpeg', 0.85));
+    close();
+  };
+}
 function resizeImage(file, maxDim, q) {
   return new Promise((resolve, reject) => {
     const img = new Image(); const url = URL.createObjectURL(file);
@@ -818,7 +1106,11 @@ function taskForm(existing) {
     '<div class="sheet-head"><h2>' + (isEdit ? t('editTask') : t('newTask')) + '</h2><button class="x">✕</button></div>' +
     '<div class="sheet-body">' +
       '<div class="field"><label>' + t('title') + '</label><input id="tf-title" maxlength="120" value="' + esc(existing?existing.title:'') + '"></div>' +
-      '<div class="field"><label>' + t('descOpt') + '</label><textarea id="tf-desc" maxlength="4000">' + esc(existing?existing.desc:'') + '</textarea></div>' +
+      '<div class="field"><label>' + t('descOpt') + ' · ☑️ ' + t('checklist') + '</label>' +
+      '<div id="ck-editor"></div>' +
+      '<div class="small muted" style="margin-top:6px">' + (LANG==='es'
+        ? 'Cada línea = una casilla. Enter = nueva casilla. Borrar en línea vacía = quitar casilla.'
+        : 'Each line = one checkbox. Enter = new checkbox. Backspace on an empty line removes it.') + '</div></div>' +
       '<div class="row"><div class="field grow"><label>' + t('assignTo') + '</label><select id="tf-assignee">' +
         USERS.filter(u => u.active).map(u => '<option value="' + u.id + '"' + (existing && existing.assignee === u.id ? ' selected' : '') + '>' + esc(u.name) + '</option>').join('') +
       '</select></div>' +
@@ -830,10 +1122,40 @@ function taskForm(existing) {
     '</div>';
   sheet.querySelector('.x').onclick = () => ov.remove();
   ov.appendChild(sheet); document.body.appendChild(ov);
+
+  /* --- checklist editor: rows with ☐ + input; Enter adds row, Backspace on empty removes --- */
+  const editor = sheet.querySelector('#ck-editor');
+  function addRow(val) {
+    const row = el('div','row'); row.style.marginBottom = '6px';
+    row.innerHTML = '<div class="ckbox" style="margin-top:9px"></div>';
+    const inp = el('input'); inp.type = 'text'; inp.className = 'grow';
+    inp.style.cssText = 'border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;outline:none';
+    inp.value = val || '';
+    inp.placeholder = t('checkItem');
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); addRow(''); editor.lastChild.querySelector('input').focus(); }
+      else if (e.key === 'Backspace' && inp.value === '') {
+        e.preventDefault();
+        if (editor.children.length > 1) {
+          const prev = row.previousElementSibling;
+          row.remove(); if (prev) prev.querySelector('input').focus();
+        }
+      }
+    });
+    row.appendChild(inp); editor.appendChild(row);
+    return row;
+  }
+  // prefill: from existing checklist, or one empty row
+  const prefill = existing && (existing.checklist||[]).length
+    ? existing.checklist.map(i => i.text)
+    : (existing && existing.desc ? existing.desc.split('\n') : ['']);
+  prefill.forEach(v => addRow(v));
+
   sheet.querySelector('#tf-save').onclick = async () => {
+    const lines = [...editor.querySelectorAll('input')].map(i => i.value.trim()).filter(Boolean);
     const payload = {
       title: sheet.querySelector('#tf-title').value.trim(),
-      desc: sheet.querySelector('#tf-desc').value.trim(),
+      desc: lines.map(l => '[ ] ' + l).join('\n'),
       assignee: sheet.querySelector('#tf-assignee').value,
       priority: sheet.querySelector('#tf-prio').value,
       due: sheet.querySelector('#tf-due').value || null,
@@ -888,6 +1210,43 @@ function schedForm(existing) {
   };
   ov.appendChild(sheet); document.body.appendChild(ov);
   setTimeout(() => sheet.querySelector('#sf-title').focus(), 80);
+}
+
+/* ---------- milestone (event) form (manager) ---------- */
+function milestoneForm(existing) {
+  const isEdit = !!existing;
+  const ov = el('div','overlay'); const sheet = el('div','sheet');
+  sheet.innerHTML =
+    '<div class="sheet-head"><h2>' + (isEdit ? t('newEvent') : t('newEvent')) + '</h2><button class="x">✕</button></div>' +
+    '<div class="sheet-body">' +
+      '<div class="field"><label>' + t('eventTitle') + '</label><input id="mf-title" maxlength="120" value="' + esc(existing?existing.title:'') + '"></div>' +
+      '<div class="field"><label>' + t('eventDate') + '</label><input id="mf-date" type="date" value="' + esc(existing?existing.date:calSelected) + '"></div>' +
+      '<div class="row"><div class="field grow"><label>' + t('eventTime') + '</label><input id="mf-start" type="time" value="' + esc(existing?(existing.start||''):'') + '"></div>' +
+      '<div class="field grow"><label>' + t('evColor') + '</label><select id="mf-color">' +
+        ['purple','orange','green','red'].map(cl => '<option value="' + cl + '"' + (existing && existing.color === cl ? ' selected' : '') + '>' + t('ev_' + cl) + '</option>').join('') +
+      '</select></div></div>' +
+      '<div class="field"><label>' + t('notesOpt') + '</label><textarea id="mf-notes" maxlength="1000">' + esc(existing?(existing.notes||''):'') + '</textarea></div>' +
+      '<button class="btn btn-primary" id="mf-save">' + (isEdit ? t('save') : t('create')) + '</button>' +
+    '</div>';
+  sheet.querySelector('.x').onclick = () => ov.remove();
+  ov.appendChild(sheet); document.body.appendChild(ov);
+  sheet.querySelector('#mf-save').onclick = async () => {
+    const payload = {
+      title: sheet.querySelector('#mf-title').value.trim(),
+      date: sheet.querySelector('#mf-date').value,
+      start: sheet.querySelector('#mf-start').value || null,
+      notes: sheet.querySelector('#mf-notes').value.trim(),
+      color: sheet.querySelector('#mf-color').value,
+    };
+    if (!payload.title) { toast(t('needTitle')); return; }
+    if (!payload.date) { toast(t('needDate')); return; }
+    try {
+      if (isEdit) await api('/api/milestones/' + existing.id, {method:'PATCH', body:JSON.stringify(payload)});
+      else await api('/api/milestones', {method:'POST', body:JSON.stringify(payload)});
+      ov.remove(); refreshAll(); toast(isEdit ? t('updated') : t('eventCreated'));
+    } catch(e) { toast(e.message); }
+  };
+  setTimeout(() => sheet.querySelector('#mf-title').focus(), 80);
 }
 
 /* ================= TEAM (admin) ================= */
@@ -1033,7 +1392,23 @@ $('#bell').onclick = async () => {
 /* ================= FAB ================= */
 $('#fab').onclick = () => {
   if (tab === 'tasks') taskForm();
-  else if (tab === 'calendar') schedForm();
+  else if (tab === 'calendar') {
+    // quick chooser: task vs event
+    const ov = el('div','overlay'); const sheet = el('div','sheet');
+    sheet.innerHTML = '<div class="sheet-head"><h2>+</h2><button class="x">✕</button></div><div class="sheet-body"></div>';
+    const body = sheet.querySelector('.sheet-body');
+    const mk = (label, fn) => {
+      const b = el('button','btn btn-ghost', label);
+      b.style.cssText = 'width:100%;margin-bottom:10px;padding:14px;font-size:15px';
+      b.onclick = () => { ov.remove(); fn(); };
+      body.appendChild(b);
+    };
+    mk('✅ ' + t('newTask'), taskForm);
+    mk('🎉 ' + t('newEvent'), milestoneForm);
+    sheet.querySelector('.x').onclick = () => ov.remove();
+    ov.onclick = e => { if (e.target === ov) ov.remove(); };
+    ov.appendChild(sheet); document.body.appendChild(ov);
+  }
 };
 
 /* go */
