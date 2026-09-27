@@ -179,14 +179,19 @@ function canSeeTask(u, t) {
   return isManager(u) || t.assignee === u.id || t.createdBy === u.id;
 }
 function logVisibleTo(u, e) {
+  if (!u) return false;
+  // Admin sees everything; sub-admin sees tasks/events/schedule + OWN account actions.
+  if (u.role === 'admin') return true;
+  if (e.type === 'user_created' || e.type === 'user_updated' || e.type === 'user_deleted') {
+    return e.actorId === u.id; // sub-admin only sees their own account actions
+  }
   if (isManager(u)) return true;
+  // employee: tasks they can see, milestones, own schedule entries
   if (e.type === 'schedule_created' || e.type === 'schedule_deleted') {
-    // employees only see schedule entries that include them
     if (e.userIds && e.userIds.includes(u.id)) return true;
     return false;
   }
   if (e.type === 'milestone_created' || e.type === 'milestone_deleted') return true;
-  if (e.type === 'user_created' || e.type === 'user_updated') return false;
   if (e.taskId) {
     const t = data.tasks.find(x => x.id === e.taskId);
     return !!t && canSeeTask(u, t);
@@ -247,6 +252,7 @@ const MIME = {
   '.js': 'text/javascript; charset=utf-8',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.webp': 'image/webp', '.gif': 'image/gif', '.svg': 'image/svg+xml',
+  '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
   '.ico': 'image/x-icon', '.json': 'application/json',
 };
 function serveStatic(res, filePath) {
@@ -348,12 +354,15 @@ route('GET', /^\/api\/users$/, async (req, res, m, u) => {
 });
 
 route('POST', /^\/api\/users$/, async (req, res, m, u) => {
-  if (!u || u.role !== 'admin') return bad(res, u ? 403 : 401, u ? 'ADMIN_ONLY' : 'No autenticado');
+  if (!u) return bad(res, 401, 'No autenticado');
+  // Admin: any role. Sub-admin: employees only.
+  if (u.role !== 'admin' && u.role !== 'subadmin') return bad(res, 403, 'ADMIN_ONLY');
   const body = await readJSON(req, 64 * 1024);
   const name = String(body.name || '').trim().slice(0, 60);
   const username = String(body.username || '').trim().toLowerCase().slice(0, 32);
   const password = String(body.password || '');
-  const role = ['admin', 'subadmin', 'employee'].includes(body.role) ? body.role : 'employee';
+  let role = ['admin', 'subadmin', 'employee'].includes(body.role) ? body.role : 'employee';
+  if (u.role === 'subadmin' && role !== 'employee') return bad(res, 403, 'SUBADMIN_EMPLOYEES_ONLY');
   if (!name) return bad(res, 400, 'NEED_NAME');
   if (!/^[a-z0-9._-]{3,32}$/.test(username)) return bad(res, 400, 'BAD_USERNAME');
   if (password.length < 6) return bad(res, 400, 'PASS_SHORT');
@@ -446,12 +455,17 @@ route('POST', /^\/api\/tasks$/, async (req, res, m, u) => {
   const assignee = String(body.assignee || '');
   const priority = ['baja', 'normal', 'alta', 'urgente'].includes(body.priority) ? body.priority : 'normal';
   const due = /^\d{4}-\d{2}-\d{2}$/.test(String(body.due || '')) ? body.due : null;
+  // multi-date: array of valid YYYY-MM-DD (max 62 days), deduped; falls back to [due]
+  let dates = Array.isArray(body.dates)
+    ? [...new Set(body.dates.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(String(d))).map(d => String(d)).sort())].slice(0, 62)
+    : [];
+  if (!dates.length && due) dates = [due];
   if (!title) return bad(res, 400, 'NEED_TITLE');
   const target = data.users.find(x => x.id === assignee && x.active !== false);
   if (!target) return bad(res, 400, 'BAD_ASSIGNEE');
   const checklist = parseChecklist(desc);
   const t = {
-    id: nextId('t'), title, desc, assignee: target.id, priority, due,
+    id: nextId('t'), title, desc, assignee: target.id, priority, due: dates[0] || null, dates,
     status: 'pending', createdBy: u.id, createdAt: nowISO(), updatedAt: nowISO(),
     completedAt: null, completedBy: null, checklist,
   };
@@ -479,6 +493,10 @@ function syncChecklistStatus(t, actor) {
   if (allDone && t.status !== 'done') {
     t.status = 'done'; t.completedAt = nowISO(); t.completedBy = actor.id;
     logEvent('task_completed', actor.id, { taskId: t.id, taskTitle: t.title, viaChecklist: true });
+    if (t.createdBy && t.createdBy !== actor.id) {
+      emitEvent('task.completed', { title: t.title, taskId: t.id, by: actor.name, at: t.completedAt },
+        { users: [t.createdBy] }, actor.id);
+    }
     emitEvent('task.status', { title: t.title, taskId: t.id, from: prev, to: 'done', by: actor.name, assignee: userName(t.assignee) },
       { users: [t.assignee, t.createdBy], roles: ['admin', 'subadmin'] }, actor.id);
     return true;
@@ -526,6 +544,12 @@ route('PATCH', /^\/api\/tasks\/([a-z0-9]+)$/, async (req, res, m, u) => {
       t.completedAt = nowISO();
       t.completedBy = u.id;
       logEvent('task_completed', u.id, { taskId: t.id, taskTitle: t.title });
+      // notify the creator (not the actor): who completed + exact time
+      if (t.createdBy && t.createdBy !== u.id) {
+        emitEvent('task.completed', {
+          title: t.title, taskId: t.id, by: u.name, at: t.completedAt,
+        }, { users: [t.createdBy] }, u.id);
+      }
     } else {
       if (prev === 'done') logEvent('task_reopened', u.id, { taskId: t.id, taskTitle: t.title });
       t.completedAt = null; t.completedBy = null;
@@ -548,6 +572,12 @@ route('PATCH', /^\/api\/tasks\/([a-z0-9]+)$/, async (req, res, m, u) => {
     if (body.desc !== undefined) t.desc = String(body.desc).trim().slice(0, 4000);
     if (body.priority !== undefined && ['baja', 'normal', 'alta', 'urgente'].includes(body.priority)) t.priority = body.priority;
     if (body.due !== undefined) t.due = /^\d{4}-\d{2}-\d{2}$/.test(String(body.due)) ? body.due : null;
+    if (body.dates !== undefined) {
+      const dts = Array.isArray(body.dates)
+        ? [...new Set(body.dates.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(String(d))).map(d => String(d)).sort())].slice(0, 62)
+        : [];
+      if (dts.length) { t.dates = dts; t.due = dts[0]; }
+    }
     if (body.assignee !== undefined) {
       const target = data.users.find(x => x.id === body.assignee && x.active !== false);
       if (!target) return bad(res, 400, 'BAD_ASSIGNEE');
@@ -606,13 +636,16 @@ route('POST', /^\/api\/tasks\/([a-z0-9]+)\/updates$/, async (req, res, m, u) => 
   const t = data.tasks.find(x => x.id === m[1]);
   if (!t || !canSeeTask(u, t)) return bad(res, 404, 'NOT_FOUND');
   if (!isManager(u) && t.assignee !== u.id) return bad(res, 403, 'FORBIDDEN');
-  const body = await readJSON(req, 2 * 1024 * 1024);
+  const body = await readJSON(req, 24 * 1024 * 1024);
   const text = String(body.text || '').trim().slice(0, 2000);
   const photos = Array.isArray(body.photos) ? body.photos.filter(p => typeof p === 'string' && p.startsWith('/files/')).slice(0, 20) : [];
+  const videos = Array.isArray(body.videos) ? body.videos.filter(v => typeof v === 'string' && v.startsWith('/files/')).slice(0, 3) : [];
+  const replyTo = typeof body.replyTo === 'string' ? body.replyTo.slice(0, 24) : null;
+  const checkId = typeof body.checkId === 'string' && (t.checklist || []).some(c => c.id === body.checkId) ? body.checkId : null;
   const photo = typeof body.photo === 'string' && body.photo.startsWith('/files/') ? body.photo : (photos[0] || null);
-  if (isManager(u) && !text && !photos.length) return bad(res, 400, 'NEED_TEXT');
-  if (!text && !photos.length) return bad(res, 400, 'NEED_CONTENT');
-  const up = { id: nextId('up'), taskId: t.id, authorId: u.id, text, photo, photos, ts: nowISO() };
+  if (isManager(u) && !text && !photos.length && !videos.length) return bad(res, 400, 'NEED_TEXT');
+  if (!text && !photos.length && !videos.length) return bad(res, 400, 'NEED_CONTENT');
+  const up = { id: nextId('up'), taskId: t.id, authorId: u.id, text, photo, photos, videos, checkId, replyTo, reactions: {}, ts: nowISO() };
   data.updates.push(up);
   logEvent('update_added', u.id, { taskId: t.id, taskTitle: t.title, hasPhoto: photos.length > 0, photoCount: photos.length, excerpt: text.slice(0, 80) });
   emitEvent('update.new', { title: t.title, taskId: t.id, by: u.name, hasPhoto: photos.length > 0, excerpt: text.slice(0, 80) },
@@ -622,22 +655,44 @@ route('POST', /^\/api\/tasks\/([a-z0-9]+)\/updates$/, async (req, res, m, u) => 
   send(res, 200, { update: Object.assign({}, up, { authorName: u.name }) });
 });
 
-/* ---- photo / file upload (all roles) ---- */
+/* ---- photo / video / file upload (all roles) ---- */
 
 route('POST', /^\/api\/upload$/, async (req, res, m, u) => {
   if (!u) return bad(res, 401, 'No autenticado');
-  const body = await readJSON(req, 12 * 1024 * 1024);
+  const body = await readJSON(req, 60 * 1024 * 1024);
   const dataUrl = String(body.dataUrl || '');
-  const match = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  const isVideo = /^data:video\/(mp4|webm|quicktime);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  const isImage = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  const match = isVideo || isImage;
   if (!match) return bad(res, 400, 'BAD_IMAGE');
   const buf = Buffer.from(match[2], 'base64');
-  if (buf.length > 6 * 1024 * 1024) return bad(res, 400, 'IMAGE_TOO_BIG');
-  const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
+  const max = isVideo ? 40 * 1024 * 1024 : 6 * 1024 * 1024;
+  if (buf.length > max) return bad(res, 400, isVideo ? 'VIDEO_TOO_BIG' : 'IMAGE_TOO_BIG');
+  const ext = isVideo ? (match[1] === 'quicktime' ? 'mov' : match[1]) : (match[1] === 'jpeg' ? 'jpg' : match[1]);
   const name = crypto.randomBytes(10).toString('hex') + '.' + ext;
   fs.mkdirSync(FILES_DIR, { recursive: true });
   fs.writeFileSync(path.join(FILES_DIR, name), buf);
   save();
   send(res, 200, { url: '/files/' + name });
+});
+
+/* ---- emoji reaction on an update (all roles who can see the task) ---- */
+route('POST', /^\/api\/updates\/([a-z0-9]+)\/react$/, async (req, res, m, u) => {
+  if (!u) return bad(res, 401, 'No autenticado');
+  const up = data.updates.find(x => x.id === m[1]);
+  if (!up) return bad(res, 404, 'NOT_FOUND');
+  const t = data.tasks.find(x => x.id === up.taskId);
+  if (!t || !canSeeTask(u, t)) return bad(res, 404, 'NOT_FOUND');
+  const body = await readJSON(req, 4 * 1024);
+  const emoji = String(body.emoji || '').slice(0, 8);
+  if (!emoji) return bad(res, 400, 'NEED_EMOJI');
+  up.reactions = up.reactions || {};
+  const arr = up.reactions[emoji] || [];
+  const i = arr.indexOf(u.id);
+  if (i > -1) arr.splice(i, 1); else arr.push(u.id); // toggle
+  if (arr.length) up.reactions[emoji] = arr; else delete up.reactions[emoji];
+  save(); sseBroadcast({ type: 'sync' });
+  send(res, 200, { reactions: up.reactions });
 });
 
 /* ---- milestones (events: harvest, cutting, drying...) — no check-off, visual only ---- */
@@ -830,7 +885,7 @@ route('GET', /^\/api\/events$/, async (req, res, m, u) => {
 });
 
 route('GET', /^\/api\/health$/, async (req, res) => {
-  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.3', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
+  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.5', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
 });
 
 /* ------------------------------------------------------------- server -- */

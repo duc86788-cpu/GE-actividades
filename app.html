@@ -123,8 +123,6 @@
   .cal-cell.other{opacity:.3}
   .cal-cell.today{outline:2px solid var(--brand);outline-offset:-2px}
   .cal-cell.sel{background:var(--brand);color:#fff}
-  .cal-cell.has-ev{background:#f3e8ff}
-  .cal-cell.sel.has-ev{background:#7c3aed}
   .cal-cell .dots{position:absolute;bottom:4px;display:flex;gap:2px}
   .cal-cell .dots .d{width:4px;height:4px;border-radius:50%;background:var(--brand)}
   .cal-cell.sel .dots .d{background:#fff}
@@ -264,6 +262,8 @@ let calMonth = new Date(); calMonth.setDate(1);
 let calSelected = new Date().toISOString().slice(0,10);
 let dayOpen = false;      // full-screen day view open
 let dayExpanded = {};     // itemId -> responses expanded
+let onlyMine = localStorage.getItem('ge_onlymine') === '1';
+let dayHistOpen = false;  // day history toggle
 
 const STR = {
   es: {
@@ -331,6 +331,12 @@ const STR = {
     checkItem:'Toca para marcar hecho', doneBy:'hecho por', checkedAt:'✓',
     checklist:'Lista de tareas', ckProgress:'completado',
     camera:'📸 Cámara', gallery:'🖼️ Galería', takePhoto:'Tomar foto', download:'Descargar',
+    noDueTasks:'Tareas sin fecha (no están en el calendario)',
+    alertToday:'Tienes tareas hoy', multiDates:'Fechas',
+    thread:'Conversación', replyTo:'Responder', react:'👍 Reaccionar',
+    video:'🎥 Video', addLine:'➕', onlyMine:'Solo mías', allTasks:'Todas',
+    history:'Historial del día', showHistory:'Ver historial', hideHistory:'Ocultar historial',
+    completedBy2:'completada por', taskDone:'✅ Tarea completada',
     photosUploading:'Subiendo fotos…', photoCount:'foto(s)',
     camNotAvailable:'La cámara no está disponible en este dispositivo',
     taskAutoDone:'¡Todas las casillas marcadas — tarea completada! 🎉',
@@ -401,6 +407,12 @@ const STR = {
     checkItem:'Tap to mark done', doneBy:'done by', checkedAt:'✓',
     checklist:'Checklist', ckProgress:'done',
     camera:'📸 Camera', gallery:'🖼️ Gallery', takePhoto:'Take photo', download:'Download',
+    noDueTasks:'Tasks without a date (not on the calendar)',
+    alertToday:'You have tasks today', multiDates:'Dates',
+    thread:'Conversation', replyTo:'Reply', react:'👍 React',
+    video:'🎥 Video', addLine:'➕', onlyMine:'Only mine', allTasks:'All',
+    history:'Day history', showHistory:'View history', hideHistory:'Hide history',
+    completedBy2:'completed by', taskDone:'✅ Task completed',
     photosUploading:'Uploading photos…', photoCount:'photo(s)',
     camNotAvailable:'Camera not available on this device',
     taskAutoDone:'All boxes checked — task completed! 🎉',
@@ -507,6 +519,46 @@ function enterApp() {
   $('#lang-pick').classList.add('hidden');
   $('#app').classList.remove('hidden');
   buildNav(); connectEvents(); refreshAll();
+  scheduleDayAlerts();
+}
+
+/* ---- task alerts: on login + at 8:00 AM on the day of each task ---- */
+let alertTimer = null;
+function scheduleDayAlerts() {
+  if (alertTimer) clearInterval(alertTimer);
+  alertTimer = setInterval(checkDayAlerts, 60000);
+  setTimeout(checkDayAlerts, 1500); // shortly after login / app open
+}
+function checkDayAlerts() {
+  if (!ME || !TASKS.length) return;
+  const today = new Date().toISOString().slice(0,10);
+  const key = 'ge_alerted_' + today;
+  // on-login alert: my tasks for today, once per day per device
+  if (!localStorage.getItem(key)) {
+    const mine = TASKS.filter(x => x.assignee === ME.id && x.status !== 'done' && (
+      (Array.isArray(x.dates) && x.dates.includes(today)) || (!Array.isArray(x.dates) && x.due === today)
+    ));
+    if (mine.length) {
+      localStorage.setItem(key, '1');
+      toast('🔔 ' + t('alertToday') + ' (' + mine.length + '): ' + mine.map(x => x.title).join(', '));
+    } else {
+      localStorage.setItem(key, 'none'); // don't re-check every minute
+    }
+  }
+  // 8 AM alert while app is open
+  const now = new Date();
+  const eightKey = 'ge_alert8_' + today;
+  if (now.getHours() >= 8 && !localStorage.getItem(eightKey)) {
+    const mine = TASKS.filter(x => x.assignee === ME.id && x.status !== 'done' && (
+      (Array.isArray(x.dates) && x.dates.includes(today)) || (!Array.isArray(x.dates) && x.due === today)
+    ));
+    if (mine.length) {
+      localStorage.setItem(eightKey, '1');
+      toast('🔔 ' + t('alertToday') + ' (' + mine.length + '): ' + mine.map(x => x.title).join(', '));
+    } else {
+      localStorage.setItem(eightKey, 'none');
+    }
+  }
 }
 function connectEvents() {
   if (evSource) evSource.close();
@@ -573,6 +625,12 @@ function renderCalendar(m) {
   const daysInMonth = new Date(y, mo+1, 0).getDate();
   const prevMonthDays = new Date(y, mo, 0).getDate();
 
+  // "Only mine" toggle (default on for employees)
+  const tog = el('button','btn btn-ghost btn-sm mine-tog', (onlyMine ? '👤 ' + t('onlyMine') : '👥 ' + t('allTasks')));
+  if (onlyMine) tog.style.cssText = 'background:var(--brand);color:#fff;border-color:var(--brand)';
+  tog.onclick = () => { onlyMine = !onlyMine; localStorage.setItem('ge_onlymine', onlyMine ? '1' : '0'); render(); };
+  m.appendChild(tog);
+
   const head = el('div','cal-head');
   head.innerHTML = '<button class="cal-nav" id="cal-prev">‹</button><h2>' + esc(monthName) + '</h2><button class="cal-nav" id="cal-next">›</button>';
   m.appendChild(head);
@@ -588,12 +646,13 @@ function renderCalendar(m) {
   const grid2 = el('div','cal-grid');
   const todayStr = new Date().toISOString().slice(0,10);
 
-  // Build a map of date -> {hasTask, hasDone, hasActivity, hasEv}
+  // Build a map of date -> {task|done, ev} — clean grid: max 2 dots per day
   const dayMap = {};
-  const addDay = (d, type) => { (dayMap[d] = dayMap[d] || {})[type] = true; };
-  TASKS.forEach(t2 => { if (t2.due) addDay(t2.due, t2.status === 'done' ? 'done' : 'task'); });
-  LOG.forEach(e => { addDay((e.ts||'').slice(0,10), 'activity'); });
-  MILES.forEach(mi => { addDay(mi.date, 'ev'); });
+  TASKS.forEach(t2 => {
+    const days = (Array.isArray(t2.dates) && t2.dates.length) ? t2.dates : (t2.due ? [t2.due] : []);
+    days.forEach(d => { dayMap[d] = dayMap[d] || {}; if (t2.status === 'done') dayMap[d].done = true; else dayMap[d].task = true; });
+  });
+  MILES.forEach(mi => { dayMap[mi.date] = dayMap[mi.date] || {}; dayMap[mi.date].ev = true; });
 
   // prev month padding
   for (let i = startDow - 1; i >= 0; i--) {
@@ -602,14 +661,12 @@ function renderCalendar(m) {
   for (let d = 1; d <= daysInMonth; d++) {
     const dStr = y + '-' + pad2(mo+1) + '-' + pad2(d);
     const info = dayMap[dStr] || {};
-    const cls = 'cal-cell' + (dStr === todayStr ? ' today' : '') + (dStr === calSelected ? ' sel' : '') + (info.ev ? ' has-ev' : '');
+    const cls = 'cal-cell' + (dStr === todayStr ? ' today' : '') + (dStr === calSelected ? ' sel' : '');
     const cell = el('div', cls, String(d));
-    if (info.task || info.done || info.activity || info.ev) {
+    if (info.task || info.done || info.ev) {
       const dots = el('div','dots');
       if (info.task) dots.appendChild(el('div','d'));
-      if (info.done) dots.appendChild(el('div','d done'));
       if (info.ev) dots.appendChild(el('div','d ev'));
-      if (info.activity && !info.task && !info.done && !info.ev) dots.appendChild(el('div','d'));
       cell.appendChild(dots);
     }
     // SINGLE TAP: select + show quick list at bottom of homepage
@@ -631,15 +688,24 @@ function renderCalendar(m) {
   renderDaySummary(m);
 }
 
+/* helpers: a task covers a date if it's in its dates list (or legacy due) */
+function taskOnDate(x, ds) {
+  if (Array.isArray(x.dates) && x.dates.length) return x.dates.includes(ds);
+  return x.due === ds;
+}
+function visibleTasks() {
+  const list = onlyMine ? TASKS.filter(x => x.assignee === ME.id || x.createdBy === ME.id) : TASKS;
+  return list;
+}
+
 /* Quick list of the selected day at the bottom of the homepage (single tap) */
 function renderDaySummary(m) {
   const ds = calSelected;
-  const dayTasks = TASKS.filter(t2 => t2.due === ds);
+  const dayTasks = visibleTasks().filter(t2 => taskOnDate(t2, ds));
   const dayEvs = MILES.filter(mi => mi.date === ds);
   if (!dayTasks.length && !dayEvs.length) {
     m.appendChild(el('div','small muted', fmtDate(ds) + ' · ' + t('noTasks')));
-    return;
-  }
+  } else {
   m.appendChild(el('div','sect', fmtDate(ds)));
   dayEvs.forEach(mi => {
     const c = el('div','card tl-ev');
@@ -666,6 +732,26 @@ function renderDaySummary(m) {
     card.onclick = () => openTask(t2.id);
     m.appendChild(card);
   });
+  }
+  // tasks with NO due date — they never show on any calendar day, surface them here
+  const noDue = TASKS.filter(t2 => !t2.due);
+  if (noDue.length) {
+    m.appendChild(el('div','sect', t('noDueTasks')));
+    noDue.forEach(t2 => {
+      const card = el('div','card tl-task');
+      const mine = t2.assignee === ME.id;
+      const ck = t2.checklist || [];
+      card.innerHTML = '<div class="row" style="align-items:flex-start">' +
+        '<div class="prio p-' + esc(t2.priority) + '" style="margin-top:7px"></div>' +
+        '<div class="grow">' +
+          '<div style="font-weight:700">' + esc(t2.title) + '</div>' +
+          '<div class="meta-line">' + t('assignedTo2') + ' <b>' + esc(t2.assigneeName) + '</b>' + (mine ? ' ' + t('you') : '') + '</div>' +
+          (ck.length ? '<div class="meta-line">☑️ ' + ck.filter(i=>i.done).length + '/' + ck.length + '</div>' : '') +
+        '</div><span class="badge b-' + esc(t2.status) + '">' + stEs(t2.status) + '</span></div>';
+      card.onclick = () => openTask(t2.id);
+      m.appendChild(card);
+    });
+  }
 }
 
 /* ============ FULL-SCREEN DAY VIEW (Open day) ============ */
@@ -684,7 +770,7 @@ function renderDayView(m) {
   }
 
   // Tasks with collapsible responses
-  const dayTasks = TASKS.filter(t2 => t2.due === ds);
+  const dayTasks = visibleTasks().filter(t2 => taskOnDate(t2, ds));
   m.appendChild(el('div','sect', t('tasksForDay')));
   if (!dayTasks.length) {
     m.appendChild(el('div','small muted', t('noTasks')));
@@ -692,13 +778,19 @@ function renderDayView(m) {
     dayTasks.forEach(t2 => m.appendChild(dayTaskCard(t2)));
   }
 
-  // Activity log for this day
+  // Day history — collapsed by default (clean view)
   const dayLog = LOG.filter(e => (e.ts||'').slice(0,10) === ds).sort((a,b) => (a.ts||'').localeCompare(b.ts||''));
-  m.appendChild(el('div','sect', t('activityForDay')));
-  if (!dayLog.length) {
-    m.appendChild(el('div','small muted', t('noActivity')));
-  } else {
-    dayLog.forEach(e => m.appendChild(logItem(e)));
+  const hTog = el('button','btn btn-ghost btn-sm', dayHistOpen ? t('hideHistory') : t('showHistory') + ' (' + dayLog.length + ')');
+  hTog.style.marginTop = '14px';
+  hTog.onclick = () => { dayHistOpen = !dayHistOpen; render(); };
+  m.appendChild(hTog);
+  if (dayHistOpen) {
+    m.appendChild(el('div','sect', t('history')));
+    if (!dayLog.length) {
+      m.appendChild(el('div','small muted', t('noActivity')));
+    } else {
+      dayLog.forEach(e => m.appendChild(logItem(e)));
+    }
   }
 }
 
@@ -783,15 +875,25 @@ async function fillResponses(wrap, taskId) {
   } catch(e) { wrap.innerHTML = ''; wrap.appendChild(el('div','small muted', e.message)); }
 }
 
-/* checklist row with live toggle */
+/* checklist row with live toggle — checkmark appears instantly, server confirms after */
 function ckRow(t2, item) {
   const r = el('div','ckrow' + (item.done ? ' done' : ''));
   const canCheck = isManager() || t2.assignee === ME.id;
   r.innerHTML = '<div class="ckbox">' + (item.done ? '✓' : '') + '</div>' +
     '<div class="grow"><div class="cktext">' + esc(item.text) + '</div>' +
-    (item.done && item.doneAt ? '<div class="ckmeta">' + t('doneBy') + ' ' + esc(item.doneByName || '') + ' · ' + fmtTs(item.doneAt) + '</div>' : '') + '</div>';
+    (item.done && item.doneAt ? '<div class="ckmeta">' + t('doneBy') + ' ' + esc(item.doneByName || '') + ' · ' + fmtTs(item.doneAt) + '</div>' : '') + '</div>' +
+    '<button class="btn btn-ghost btn-sm ck-thread">💬</button>';
   if (canCheck) {
-    r.onclick = async () => {
+    r.querySelector('.ckbox').parentElement.style.cursor = 'pointer';
+    r.onclick = async e => {
+      if (e.target.closest('.ck-thread')) return;
+      const box = r.querySelector('.ckbox');
+      const willBeDone = !item.done;
+      // live checkmark immediately
+      box.textContent = willBeDone ? '✓' : '';
+      r.classList.toggle('done', willBeDone);
+      const localTask = TASKS.find(x => x.id === t2.id);
+      if (localTask) { const li = localTask.checklist.find(c => c.id === item.id); if (li) { li.done = willBeDone; li.doneBy = willBeDone ? ME.id : null; li.doneAt = willBeDone ? new Date().toISOString() : null; li.doneByName = willBeDone ? ME.name : null; } }
       try {
         const resp = await api('/api/tasks/' + t2.id + '/check', {method:'POST', body:JSON.stringify({itemId:item.id})});
         const idx = TASKS.findIndex(x => x.id === t2.id);
@@ -799,10 +901,105 @@ function ckRow(t2, item) {
         const ck2 = resp.task.checklist || [];
         if (resp.task.status === 'done' && ck2.length && ck2.every(x => x.done)) toast(t('taskAutoDone'));
         render();
-      } catch(e) { toast(e.message); }
+      } catch(e2) {
+        // rollback on failure
+        box.textContent = item.done ? '✓' : '';
+        r.classList.toggle('done', !!item.done);
+        toast(e2.message);
+      }
     };
   }
+  r.querySelector('.ck-thread').onclick = e => { e.stopPropagation(); openCheckThread(t2, item); };
   return r;
+}
+
+/* per-checkbox conversation thread */
+async function openCheckThread(t2, item) {
+  const ov = el('div','overlay'); const sheet = el('div','sheet');
+  sheet.innerHTML = '<div class="sheet-head"><h2>💬 ' + t('thread') + '</h2><button class="x">✕</button></div>' +
+    '<div class="sheet-body"><div class="card" style="background:var(--chip)"><b>' + esc(item.text) + '</b>' +
+    '<div class="meta-line">' + (item.done ? '☑️ ' + t('doneBy') + ' ' + esc(item.doneByName||'') + ' · ' + fmtTs(item.doneAt) : t('checkItem')) + '</div></div>' +
+    '<div id="ct-list"><div class="small muted">…</div></div></div>';
+  sheet.querySelector('.x').onclick = () => ov.remove();
+  ov.appendChild(sheet); document.body.appendChild(ov);
+  const listEl = sheet.querySelector('#ct-list');
+  const canPost = isManager() || t2.assignee === ME.id;
+
+  async function loadThread() {
+    try {
+      const d = await api('/api/tasks/' + t2.id);
+      const all = d.updates.filter(u2 => u2.checkId === item.id);
+      const roots = all.filter(u2 => !u2.replyTo);
+      listEl.innerHTML = '';
+      if (!roots.length) listEl.appendChild(el('div','small muted','—'));
+      const renderOne = (u2, depth) => {
+        const r = el('div','upd'); if (depth) r.style.marginLeft = (depth * 22) + 'px';
+        const rx = Object.entries(u2.reactions || {}).map(([em, ids]) => em + (ids.length > 1 ? ids.length : '')).join(' ');
+        r.innerHTML = '<div class="avatar">' + esc(initials(u2.authorName)) + '</div>' +
+          '<div class="bubble"><div class="small"><b>' + esc(u2.authorName) + '</b> <span class="muted">· ' + fmtTs(u2.ts) + '</span></div>' +
+          (u2.text ? '<div style="white-space:pre-wrap;margin-top:2px">' + esc(u2.text) + '</div>' : '') +
+          ((u2.photos||[]).length ? '<div class="multiPrev">' + u2.photos.map(p => '<img loading="lazy" src="' + esc(p) + '">').join('') + '</div>' : '') +
+          ((u2.videos||[]).length ? u2.videos.map(v => '<video src="' + esc(v) + '" controls preload="metadata" style="width:100%;max-height:280px;border-radius:10px;margin-top:6px"></video>').join('') : '') +
+          (rx ? '<div class="small" style="margin-top:4px">' + esc(rx) + '</div>' : '') +
+          '<div class="row small" style="gap:10px;margin-top:4px">' +
+            (canPost ? '<span class="lnk ct-reply">↩︎ ' + t('replyTo') + '</span>' : '') +
+            '<span class="lnk ct-react">👍</span><span class="lnk ct-react">🔥</span><span class="lnk ct-react">✅</span>' +
+          '</div></div>';
+        if (canPost) r.querySelector('.ct-reply').onclick = () => openComposer(u2.id);
+        r.querySelectorAll('.ct-react').forEach(btn => btn.onclick = async () => {
+          try { await api('/api/updates/' + u2.id + '/react', {method:'POST', body:JSON.stringify({emoji: btn.textContent})}); loadThread(); } catch(e3) { toast(e3.message); }
+        });
+        return r;
+      };
+      roots.forEach(root => {
+        listEl.appendChild(renderOne(root, 0));
+        all.filter(u2 => u2.replyTo === root.id).forEach(child => listEl.appendChild(renderOne(child, 1)));
+      });
+    } catch(e) { listEl.innerHTML = ''; listEl.appendChild(el('div','small muted', e.message)); }
+  }
+
+  function openComposer(replyTo) {
+    const old = sheet.querySelector('.ct-compose'); if (old) old.remove();
+    const comp = el('div','ct-compose');
+    comp.style.cssText = 'border-top:1px solid var(--line);padding-top:10px;margin-top:8px';
+    const ta = el('textarea'); ta.placeholder = t('replyTo') + '…'; ta.style.width = '100%'; ta.rows = 2;
+    let vids = [], phots = [];
+    const prev = el('div','multiPrev');
+    const camB = el('button','btn btn-ghost btn-sm', t('camera'));
+    const galB = el('button','btn btn-ghost btn-sm', t('gallery'));
+    const vidB = el('button','btn btn-ghost btn-sm', t('video'));
+    const sendB = el('button','btn btn-primary btn-sm', t('send'));
+    camB.onclick = () => openCamera(async du => {
+      if (phots.length >= 20) { toast('20 max'); return; }
+      try { const r = await api('/api/upload', {method:'POST', body:JSON.stringify({dataUrl:du})}); phots.push(r.url); drawPrev(); } catch(e3) { toast(e3.message); }
+    });
+    galB.onclick = () => pickPhotos(urls => { urls.forEach(u2 => { if (phots.length < 20) phots.push(u2); }); drawPrev(); }, 'image/*');
+    vidB.onclick = () => pickPhotos(async urls => {
+      for (const u2 of urls.slice(0, 3)) {
+        try { const r = await api('/api/upload', {method:'POST', body:JSON.stringify({dataUrl:u2})}); vids.push(r.url); drawPrev(); }
+        catch(e3) { toast(e3.message); }
+      }
+    }, 'video/*');
+    function drawPrev() {
+      prev.innerHTML = '';
+      phots.forEach((p, i) => { const s = el('div','shotPrev','<img src="' + esc(p) + '">'); const xx = el('button','x','✕'); xx.onclick = () => { phots.splice(i,1); drawPrev(); }; s.appendChild(xx); prev.appendChild(s); });
+      vids.forEach((v, i) => { const s = el('div','shotPrev','<video src="' + esc(v) + '" style="width:74px;height:74px;object-fit:cover;border-radius:10px"></video>'); const xx = el('button','x','✕'); xx.onclick = () => { vids.splice(i,1); drawPrev(); }; s.appendChild(xx); prev.appendChild(s); });
+    }
+    const row = el('div','row'); row.append(camB, galB, vidB, sendB);
+    comp.append(ta, prev, row);
+    sheet.querySelector('.sheet-body').appendChild(comp);
+    sendB.onclick = async () => {
+      const text = ta.value.trim();
+      if (!text && !phots.length && !vids.length) { toast(t('writeSomething')); return; }
+      sendB.disabled = true;
+      try {
+        await api('/api/tasks/' + t2.id + '/updates', {method:'POST', body:JSON.stringify({text, photos:phots, videos:vids, checkId:item.id, replyTo: replyTo || null})});
+        comp.remove(); loadThread(); refreshAll();
+      } catch(e3) { toast(e3.message); sendB.disabled = false; }
+    };
+  }
+  loadThread();
+  if (canPost) openComposer(null);
 }
 
 function logItem(e) {
@@ -876,7 +1073,7 @@ function taskCard(x) {
         (x.desc ? '<div class="small muted" style="margin-top:3px;white-space:pre-wrap">' + esc(x.desc.length>140?x.desc.slice(0,140)+'…':x.desc) + '</div>' : '') +
         '<div class="row small muted" style="margin-top:8px;flex-wrap:wrap;gap:6px">' +
           '<span class="badge b-' + esc(x.status) + '">' + stEs(x.status) + '</span>' +
-          (x.due ? '<span class="' + (isOverdue(x)?'overdue':'') + '">📅 ' + fmtDateShort(x.due) + '</span>' : '') +
+          (x.due ? '<span class="' + (isOverdue(x)?'overdue':'') + '">📅 ' + fmtDateShort(x.due) + ((Array.isArray(x.dates) && x.dates.length > 1) ? '→' + fmtDateShort(x.dates[x.dates.length-1]) : '') + '</span>' : '') +
           (x.updateCount ? '<span>💬 ' + x.updateCount + '</span>' : '') +
           (ck.length ? '<span>☑️ ' + ckDone + '/' + ck.length + '</span>' : '') +
         '</div>' +
@@ -885,7 +1082,53 @@ function taskCard(x) {
       '<div style="font-size:22px;color:#cbd5e1">›</div>' +
     '</div>';
   c.onclick = () => openTask(x.id);
+  // long-press (hold ~500ms) → quick reply menu (message and/or photos) without opening the task
+  let lpTimer = null, lpFired = false;
+  const startLP = () => { lpFired = false; lpTimer = setTimeout(() => { lpFired = true; if (navigator.vibrate) navigator.vibrate(30); openQuickReply(x); }, 500); };
+  const cancelLP = () => { clearTimeout(lpTimer); };
+  c.addEventListener('touchstart', startLP, {passive:true});
+  c.addEventListener('touchend', e => { cancelLP(); if (lpFired) { e.preventDefault(); e.stopPropagation(); } }, {passive:false});
+  c.addEventListener('touchmove', cancelLP, {passive:true});
+  c.addEventListener('contextmenu', e => { e.preventDefault(); openQuickReply(x); }); // desktop right-click too
   return c;
+}
+
+/* long-press quick reply: message and/or photos, straight from the card */
+function openQuickReply(x) {
+  const ov = el('div','overlay'); const sheet = el('div','sheet');
+  sheet.innerHTML = '<div class="sheet-head"><h2>↩︎ ' + esc(x.title) + '</h2><button class="x">✕</button></div>' +
+    '<div class="sheet-body" id="qr-body"></div>';
+  sheet.querySelector('.x').onclick = () => ov.remove();
+  ov.appendChild(sheet); document.body.appendChild(ov);
+  const body = sheet.querySelector('#qr-body');
+  const ta = el('textarea'); ta.placeholder = t('replyTo') + '…'; ta.rows = 3; ta.style.width = '100%';
+  let phots = [];
+  const prev = el('div','multiPrev');
+  const camB = el('button','btn btn-ghost btn-sm', t('camera'));
+  const galB = el('button','btn btn-ghost btn-sm', t('gallery'));
+  const sendB = el('button','btn btn-primary btn-sm', t('send'));
+  const openB = el('button','btn btn-ghost btn-sm', t('openTask'));
+  camB.onclick = () => openCamera(async du => {
+    if (phots.length >= 20) { toast('20 max'); return; }
+    try { const r = await api('/api/upload', {method:'POST', body:JSON.stringify({dataUrl:du})}); phots.push(r.url); drawPrev(); } catch(e2) { toast(e2.message); }
+  });
+  galB.onclick = () => pickPhotos(urls => { urls.forEach(u2 => { if (phots.length < 20) phots.push(u2); }); drawPrev(); });
+  function drawPrev() {
+    prev.innerHTML = '';
+    phots.forEach((p, i) => { const s = el('div','shotPrev','<img src="' + esc(p) + '">'); const xx = el('button','x','✕'); xx.onclick = () => { phots.splice(i,1); drawPrev(); }; s.appendChild(xx); prev.appendChild(s); });
+  }
+  const row = el('div','row'); row.append(camB, galB, sendB, openB);
+  body.append(ta, prev, row);
+  openB.onclick = () => { ov.remove(); openTask(x.id); };
+  sendB.onclick = async () => {
+    const text = ta.value.trim();
+    if (!text && !phots.length) { toast(t('writeSomething')); return; }
+    sendB.disabled = true;
+    try {
+      await api('/api/tasks/' + x.id + '/updates', {method:'POST', body:JSON.stringify({text, photos:phots})});
+      ov.remove(); toast('✅'); refreshAll();
+    } catch(e2) { toast(e2.message); sendB.disabled = false; }
+  };
 }
 
 /* ---------- task detail ---------- */
@@ -1064,10 +1307,9 @@ document.addEventListener('click', e => {
 
 /* ---------- photo picking: gallery (multi, up to 20) + live camera ---------- */
 let photoMultiCb = null;
-function pickPhotos(cb) { photoMultiCb = cb; $('#file-in').click(); }
+let fileAccept = 'image/*';
+function pickPhotos(cb, accept) { photoMultiCb = cb; if (accept) { $('#file-in').setAttribute('accept', accept); } else { $('#file-in').setAttribute('accept','image/*'); } $('#file-in').click(); }
 $('#file-in').multiple = true;
-$('#file-in').removeAttribute('accept');
-$('#file-in').setAttribute('accept','image/*');
 $('#file-in').onchange = async e => {
   const files = [...e.target.files].slice(0, 20);
   e.target.value = '';
@@ -1076,13 +1318,30 @@ $('#file-in').onchange = async e => {
   try {
     const urls = [];
     for (const f of files) {
-      const dataUrl = await resizeImage(f, 1600, 0.82);
-      const r = await api('/api/upload', {method:'POST', body:JSON.stringify({dataUrl})});
-      urls.push(r.url);
+      const isVid = (f.type || '').startsWith('video/');
+      let dataUrl;
+      if (isVid) {
+        dataUrl = await fileToDataUrl(f);
+        if (f.size > 40 * 1024 * 1024) { toast(t('uploadFail') + 'video > 40MB'); continue; }
+        const r = await api('/api/upload', {method:'POST', body:JSON.stringify({dataUrl})});
+        urls.push(r.url);
+      } else {
+        dataUrl = await resizeImage(f, 1600, 0.82);
+        const r = await api('/api/upload', {method:'POST', body:JSON.stringify({dataUrl})});
+        urls.push(r.url);
+      }
     }
     photoMultiCb(urls);
   } catch(err) { toast(t('uploadFail') + err.message); }
 };
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = reject;
+    fr.readAsDataURL(file);
+  });
+}
 
 /* live camera with burned-in timestamp */
 function openCamera(onShot) {
@@ -1157,7 +1416,10 @@ function taskForm(existing) {
       '<div class="field grow"><label>' + t('priority').replace(':','') + '</label><select id="tf-prio">' +
         ['baja','normal','alta','urgente'].map(p => '<option value="' + p + '"' + (existing && existing.priority === p ? ' selected' : '') + '>' + prEs(p) + '</option>').join('') +
       '</select></div></div>' +
-      '<div class="field"><label>' + t('dueDate') + '</label><input id="tf-due" type="date" value="' + esc(existing?(existing.due||''):'') + '"></div>' +
+      '<div class="field"><label>' + t('dueDate') + ' *</label><input id="tf-due" type="date" value="' + esc(existing?(existing.due||''):'') + '"></div>' +
+      '<div class="field"><label>' + t('multiDates') + '</label>' +
+      '<div class="row"><input id="tf-days" type="number" min="1" max="62" value="1" style="width:90px" inputmode="numeric">' +
+      '<span class="small muted" style="padding:0 10px">' + (LANG==='es' ? 'días seguidos (1 = solo ese día)' : 'days in a row (1 = just that day)') + '</span></div></div>' +
       '<button class="btn btn-primary" id="tf-save">' + (isEdit ? t('save') : t('createTask')) + '</button>' +
     '</div>';
   sheet.querySelector('.x').onclick = () => ov.remove();
@@ -1185,6 +1447,13 @@ function taskForm(existing) {
     row.appendChild(inp); editor.appendChild(row);
     return row;
   }
+  // ➕ button — phone-friendly way to add checkbox lines (Enter still works on laptops)
+  const addBtnRow = el('div');
+  const addBtn = el('button','btn btn-ghost btn-sm','➕ ' + t('checklist'));
+  addBtn.type = 'button';
+  addBtn.onclick = () => { addRow('').querySelector('input').focus(); };
+  addBtnRow.appendChild(addBtn); addBtnRow.style.marginTop = '6px';
+  editor.parentElement.appendChild(addBtnRow);
   // prefill: from existing checklist, or one empty row
   const prefill = existing && (existing.checklist||[]).length
     ? existing.checklist.map(i => i.text)
@@ -1193,14 +1462,27 @@ function taskForm(existing) {
 
   sheet.querySelector('#tf-save').onclick = async () => {
     const lines = [...editor.querySelectorAll('input')].map(i => i.value.trim()).filter(Boolean);
+    // build the date list: start date + N days in a row
+    const startD = sheet.querySelector('#tf-due').value;
+    const nDays = Math.max(1, Math.min(62, parseInt(sheet.querySelector('#tf-days').value, 10) || 1));
+    let dates = [];
+    if (startD) {
+      const d0 = new Date(startD + 'T12:00:00');
+      for (let i = 0; i < nDays; i++) {
+        const d = new Date(d0); d.setDate(d.getDate() + i);
+        dates.push(d.toISOString().slice(0,10));
+      }
+    }
     const payload = {
       title: sheet.querySelector('#tf-title').value.trim(),
       desc: lines.map(l => '[ ] ' + l).join('\n'),
       assignee: sheet.querySelector('#tf-assignee').value,
       priority: sheet.querySelector('#tf-prio').value,
-      due: sheet.querySelector('#tf-due').value || null,
+      due: dates[0] || null,
+      dates,
     };
     if (!payload.title) { toast(t('needTitle')); return; }
+    if (!payload.due) { toast(t('needDate')); return; }
     try {
       if (isEdit) await api('/api/tasks/' + existing.id, {method:'PATCH', body:JSON.stringify(payload)});
       else await api('/api/tasks', {method:'POST', body:JSON.stringify(payload)});
@@ -1405,10 +1687,11 @@ $('#bell').onclick = async () => {
   sheet.innerHTML = '<div class="sheet-head"><h2>' + t('notifications') + '</h2><button class="x">✕</button></div><div class="sheet-body"></div>';
   const body = sheet.querySelector('.sheet-body');
   if (!d.notifications.length) body.appendChild(el('div','empty','<div class="big">🔔</div>' + t('noNews')));
-  const ICONS = {'task.created':'📋','task.status':'🔄','task.reassigned':'👤','update.new':'💬','schedule.new':'📅','user.created':'👋'};
+  const ICONS = {'task.created':'📋','task.status':'🔄','task.reassigned':'👤','update.new':'💬','schedule.new':'📅','user.created':'👋','task.completed':'✅'};
   d.notifications.forEach(n => {
     const p = n.payload || {}; let txt = '';
-    if (n.type === 'task.created') txt = '<b>' + esc(p.by) + '</b>' + t('n_assigned') + esc(p.title);
+    if (n.type === 'task.completed') txt = t('taskDone') + ': <b>' + esc(p.title) + '</b> — ' + t('completedBy2') + ' <b>' + esc(p.by) + '</b> · ' + fmtTs(p.at);
+    else if (n.type === 'task.created') txt = '<b>' + esc(p.by) + '</b>' + t('n_assigned') + esc(p.title);
     else if (n.type === 'task.status') txt = '<b>' + esc(p.by) + '</b>' + t('n_moved') + esc(p.title) + t('n_to') + '<b>' + esc(p.toEs) + '</b>';
     else if (n.type === 'task.reassigned') txt = '<b>' + esc(p.by) + '</b>' + t('n_moved') + esc(p.title) + t('n_to') + esc(p.to);
     else if (n.type === 'update.new') txt = '<b>' + esc(p.by) + '</b>' + t('n_updateIn') + esc(p.title) + '"' + (p.hasPhoto ? ' 📷' : '');
