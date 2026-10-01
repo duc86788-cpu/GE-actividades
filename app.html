@@ -381,6 +381,8 @@ const STR = {
     video:'🎥 Video', addLine:'➕', onlyMine:'Solo mías', allTasks:'Todas',
     history:'Historial del día', showHistory:'Ver historial', hideHistory:'Ocultar historial',
     completedBy2:'completada por', taskDone:'✅ Tarea completada',
+    stPending:'Pendientes', stProgress:'En curso', stLate:'Atrasadas', stDone:'Completadas',
+    assignTask:'Asignar tarea', show:'Ver', hide:'Ocultar', allDone:'¡Todo al día! 🎉',
     photosUploading:'Subiendo fotos…', photoCount:'foto(s)',
     camNotAvailable:'La cámara no está disponible en este dispositivo',
     taskAutoDone:'¡Todas las casillas marcadas — tarea completada! 🎉',
@@ -457,6 +459,8 @@ const STR = {
     video:'🎥 Video', addLine:'➕', onlyMine:'Only mine', allTasks:'All',
     history:'Day history', showHistory:'View history', hideHistory:'Hide history',
     completedBy2:'completed by', taskDone:'✅ Task completed',
+    stPending:'Pending', stProgress:'In progress', stLate:'Late', stDone:'Completed',
+    assignTask:'Assign task', show:'Show', hide:'Hide', allDone:'All caught up! 🎉',
     photosUploading:'Uploading photos…', photoCount:'photo(s)',
     camNotAvailable:'Camera not available on this device',
     taskAutoDone:'All boxes checked — task completed! 🎉',
@@ -822,18 +826,21 @@ function renderDayView(m) {
     dayTasks.forEach(t2 => m.appendChild(dayTaskCard(t2)));
   }
 
-  // Day history — collapsed by default (clean view)
-  const dayLog = LOG.filter(e => (e.ts||'').slice(0,10) === ds).sort((a,b) => (a.ts||'').localeCompare(b.ts||''));
-  const hTog = el('button','btn btn-ghost btn-sm', dayHistOpen ? t('hideHistory') : t('showHistory') + ' (' + dayLog.length + ')');
-  hTog.style.marginTop = '14px';
-  hTog.onclick = () => { dayHistOpen = !dayHistOpen; render(); };
-  m.appendChild(hTog);
-  if (dayHistOpen) {
-    m.appendChild(el('div','sect', t('history')));
-    if (!dayLog.length) {
-      m.appendChild(el('div','small muted', t('noActivity')));
-    } else {
-      dayLog.forEach(e => m.appendChild(logItem(e)));
+  // Day history — managers only (employees never see it)
+  const canHist = ME.role === 'admin' || ME.role === 'subadmin';
+  if (canHist) {
+    const dayLog = LOG.filter(e => (e.ts||'').slice(0,10) === ds).sort((a,b) => (a.ts||'').localeCompare(b.ts||''));
+    const hTog = el('button','btn btn-ghost btn-sm', dayHistOpen ? t('hideHistory') : t('showHistory') + ' (' + dayLog.length + ')');
+    hTog.style.marginTop = '14px';
+    hTog.onclick = () => { dayHistOpen = !dayHistOpen; render(); };
+    m.appendChild(hTog);
+    if (dayHistOpen) {
+      m.appendChild(el('div','sect', t('history')));
+      if (!dayLog.length) {
+        m.appendChild(el('div','small muted', t('noActivity')));
+      } else {
+        dayLog.forEach(e => m.appendChild(logItem(e)));
+      }
     }
   }
 }
@@ -1104,6 +1111,75 @@ function renderTasks(m) {
   }
   list.forEach(x => m.appendChild(taskCard(x)));
 }
+/* ================= PERSON VIEW: one member, all their tasks ================= */
+function openPersonView(userId) {
+  const u = USERS.find(x => x.id === userId);
+  if (!u) return;
+  const ov = el('div','overlay'); const sheet = el('div','sheet');
+  sheet.innerHTML = '<div class="sheet-head"><h2>👤 ' + esc(u.name) + '</h2><button class="x">✕</button></div>' +
+    '<div class="sheet-body" id="pv-body"></div>';
+  sheet.querySelector('.x').onclick = () => ov.remove();
+  ov.appendChild(sheet); document.body.appendChild(ov);
+  const body = sheet.querySelector('#pv-body');
+  const isMgr = ME.role === 'admin' || ME.role === 'subadmin';
+
+  function render2() {
+    const mine = TASKS.filter(x => x.assignee === userId);
+    const ck = t => (t.checklist || []);
+    const pend = mine.filter(x => x.status === 'pending');
+    const prog = mine.filter(x => x.status === 'in_progress');
+    const done = mine.filter(x => x.status === 'done');
+    const late = mine.filter(x => isOverdue(x));
+
+    // mini stats header
+    const stats = el('div','card');
+    stats.innerHTML = '<div class="row" style="gap:14px;flex-wrap:wrap">' +
+      '<div class="small"><b style="font-size:17px">' + pend.length + '</b><div class="muted">' + t('stPending') + '</div></div>' +
+      '<div class="small"><b style="font-size:17px">' + prog.length + '</b><div class="muted">' + t('stProgress') + '</div></div>' +
+      '<div class="small"><b style="font-size:17px;color:var(--bad)">' + late.length + '</b><div class="muted">' + t('stLate') + '</div></div>' +
+      '<div class="small"><b style="font-size:17px;color:var(--ok)">' + done.length + '</b><div class="muted">' + t('stDone') + '</div></div>' +
+      '</div>' +
+      '<div class="small muted" style="margin-top:8px">@' + esc(u.username) + ' · ' + roleEs(u.role) + '</div>';
+    body.innerHTML = ''; body.appendChild(stats);
+
+    // quick actions for managers
+    if (isMgr) {
+      const qa = el('div','row'); qa.style.margin = '0 0 12px';
+      const at = el('button','btn btn-primary btn-sm', '➕ ' + t('assignTask'));
+      at.onclick = () => { ov.remove(); taskForm(null, u.id); };
+      qa.appendChild(at); body.appendChild(qa);
+    }
+
+    // pending first, most urgent on top
+    const urg = ['urgente','alta','normal','baja'];
+    const srt = a => a.slice().sort((x,y) => {
+      const ux = urg.indexOf(x.priority), uy = urg.indexOf(y.priority);
+      if (ux !== uy) return ux - uy;
+      return (x.due || '9999').localeCompare(y.due || '9999');
+    });
+    const addSect = (label, arr, openDefault) => {
+      if (!arr.length) return;
+      const h = el('div','sect', label + ' (' + arr.length + ')');
+      body.appendChild(h);
+      const wrap = el('div');
+      wrap.style.cssText = openDefault ? '' : 'display:none';
+      arr.forEach(x => wrap.appendChild(taskCard(x)));
+      if (!openDefault) {
+        const tog = el('button','btn btn-ghost btn-sm', t('show') + ' ↓');
+        tog.style.marginBottom = '10px';
+        tog.onclick = () => { const open = wrap.style.display !== 'none'; wrap.style.display = open ? 'none' : ''; tog.textContent = (open ? t('show') : t('hide')) + (open ? ' ↓' : ' ↑'); };
+        body.appendChild(tog);
+      }
+      body.appendChild(wrap);
+    };
+    addSect(t('stLate'), srt(late), true);
+    addSect(t('stPending'), srt(pend), true);
+    addSect(t('stProgress'), srt(prog), true);
+    addSect(t('stDone'), srt(done), false);
+  }
+  render2();
+}
+
 function taskCard(x) {
   const c = el('div','card');
   const mine = x.assignee === ME.id;
@@ -1442,7 +1518,7 @@ function resizeImage(file, maxDim, q) {
 }
 
 /* ---------- task create/edit (manager) ---------- */
-function taskForm(existing) {
+function taskForm(existing, presetAssignee) {
   const isEdit = !!existing;
   const ov = el('div','overlay'); const sheet = el('div','sheet');
   sheet.innerHTML =
@@ -1455,7 +1531,7 @@ function taskForm(existing) {
         ? 'Cada línea = una casilla. Enter = nueva casilla. Borrar en línea vacía = quitar casilla.'
         : 'Each line = one checkbox. Enter = new checkbox. Backspace on an empty line removes it.') + '</div></div>' +
       '<div class="row"><div class="field grow"><label>' + t('assignTo') + '</label><select id="tf-assignee">' +
-        USERS.filter(u => u.active).map(u => '<option value="' + u.id + '"' + (existing && existing.assignee === u.id ? ' selected' : '') + '>' + esc(u.name) + '</option>').join('') +
+        USERS.filter(u => u.active).map(u => '<option value="' + u.id + '"' + ((existing && existing.assignee === u.id) || (!existing && presetAssignee === u.id) ? ' selected' : '') + '>' + esc(u.name) + '</option>').join('') +
       '</select></div>' +
       '<div class="field grow"><label>' + t('priority').replace(':','') + '</label><select id="tf-prio">' +
         ['baja','normal','alta','urgente'].map(p => '<option value="' + p + '"' + (existing && existing.priority === p ? ' selected' : '') + '>' + prEs(p) + '</option>').join('') +
@@ -1615,22 +1691,34 @@ function milestoneForm(existing) {
   setTimeout(() => sheet.querySelector('#mf-title').focus(), 80);
 }
 
-/* ================= TEAM (admin) ================= */
+/* ================= TEAM ================= */
 function renderTeam(m) {
-  const add = el('button','btn btn-primary', t('addPerson'));
-  add.style.marginBottom = '14px'; add.onclick = () => userForm();
-  m.appendChild(add);
+  const canMgr = ME.role === 'admin' || ME.role === 'subadmin';
+  if (canMgr) {
+    const add = el('button','btn btn-primary', t('addPerson'));
+    add.style.marginBottom = '14px'; add.onclick = () => userForm();
+    m.appendChild(add);
+  }
   const card = el('div','card');
   USERS.forEach(u => {
     const r = el('div','userrow');
     const canDelete = ME.role === 'admin' && u.id !== ME.id;
+    const canOpen = ME.role === 'admin' || ME.role === 'subadmin' || u.id === ME.id;
     r.innerHTML =
       '<div class="avatar" style="background:' + (u.role === 'admin' ? '#7c3aed' : u.role === 'subadmin' ? '#0891b2' : 'var(--brand)') + '">' + esc(initials(u.name)) + '</div>' +
       '<div class="grow"><div style="font-weight:700">' + esc(u.name) + (u.id === ME.id ? ' <span class="muted small">' + t('you') + '</span>' : '') + '</div>' +
       '<div class="small muted">@' + esc(u.username) + ' · ' + roleEs(u.role) + (u.active ? '' : ' · <b style="color:var(--bad)">' + t('inactive') + '</b>') + '</div></div>' +
+      (canOpen ? '<div style="color:var(--muted);font-size:20px">›</div>' : '') +
       (u.id !== ME.id && ME.role === 'admin' ? '<div class="switch' + (u.active ? ' on' : '') + '"></div>' : '') +
       (ME.role === 'admin' ? '<button class="btn btn-ghost btn-sm">' + t('edit') + '</button>' : '') +
       (canDelete ? '<button class="del-x">🗑</button>' : '');
+    if (canOpen) {
+      r.style.cursor = 'pointer';
+      r.onclick = e => {
+        if (e.target.closest('.switch') || e.target.closest('.btn') || e.target.closest('.del-x')) return;
+        openPersonView(u.id);
+      };
+    }
     const sw = r.querySelector('.switch');
     if (sw) sw.onclick = async () => {
       try { await api('/api/users/' + u.id, {method:'PATCH', body:JSON.stringify({active:!u.active})});
