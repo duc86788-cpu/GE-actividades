@@ -912,6 +912,15 @@ const server = http.createServer(async (req, res) => {
       if (pathname === '/' || pathname === '/app.html' || pathname === '/index.html') {
         return serveStatic(res, path.join(ROOT, 'app.html'));
       }
+      // PWA: manifest, service worker, icons — served from the app root
+      const pwaFiles = { '/manifest.json': 'manifest.json', '/sw.js': 'sw.js', '/icon-192.png': 'icon-192.png', '/icon-512.png': 'icon-512.png' };
+      if (pwaFiles[pathname]) {
+        const fp = path.join(ROOT, pwaFiles[pathname]);
+        if (fs.existsSync(fp)) {
+          res.writeHead(200, { 'Content-Type': MIME[path.extname(fp)] || 'application/octet-stream', 'Cache-Control': pathname === '/sw.js' ? 'no-cache' : 'max-age=3600' });
+          return fs.createReadStream(fp).pipe(res);
+        }
+      }
     }
 
     bad(res, 404, 'NOT_FOUND');
