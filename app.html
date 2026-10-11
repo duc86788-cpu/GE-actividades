@@ -3,7 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0f172a">
+<meta name="theme-color" content="#111827">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="GE">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="icon" href="/icon-192.png">
 <title>GE Actividades</title>
 <style>
   :root{
@@ -309,6 +315,21 @@ $('#theme-tog').onclick = () => {
   applyTheme(next);
 };
 
+/* ---------- PWA: installable app (service worker + install prompt) ---------- */
+let installPromptEvt = null;
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  installPromptEvt = e;
+  if (ME && tab === 'me') render();
+});
+window.addEventListener('appinstalled', () => { installPromptEvt = null; });
+
+
 const STR = {
   es: {
     subtitle:'Tareas, avances y horarios de tu equipo',
@@ -383,6 +404,7 @@ const STR = {
     completedBy2:'completada por', taskDone:'✅ Tarea completada',
     stPending:'Pendientes', stProgress:'En curso', stLate:'Atrasadas', stDone:'Completadas',
     assignTask:'Asignar tarea', show:'Ver', hide:'Ocultar', allDone:'¡Todo al día! 🎉',
+    installApp:'Instalar la app', installHint:'Pon GE Actividades en tu pantalla de inicio, con su propio ícono, como una app.', installNow:'Instalar ahora',
     photosUploading:'Subiendo fotos…', photoCount:'foto(s)',
     camNotAvailable:'La cámara no está disponible en este dispositivo',
     taskAutoDone:'¡Todas las casillas marcadas — tarea completada! 🎉',
@@ -461,6 +483,7 @@ const STR = {
     completedBy2:'completed by', taskDone:'✅ Task completed',
     stPending:'Pending', stProgress:'In progress', stLate:'Late', stDone:'Completed',
     assignTask:'Assign task', show:'Show', hide:'Hide', allDone:'All caught up! 🎉',
+    installApp:'Install the app', installHint:'Put GE Actividades on your home screen with its own icon, like a real app.', installNow:'Install now',
     photosUploading:'Uploading photos…', photoCount:'photo(s)',
     camNotAvailable:'Camera not available on this device',
     taskAutoDone:'All boxes checked — task completed! 🎉',
@@ -1788,6 +1811,20 @@ function renderMe(m) {
   cl.querySelector('#me-es').onclick = () => { LANG='es'; applyLang(); };
   cl.querySelector('#me-en').onclick = () => { LANG='en'; applyLang(); };
   m.appendChild(cl);
+
+  // install as app (PWA) — button appears when the phone offers installation
+  if (installPromptEvt) {
+    const ci = el('div','card');
+    ci.innerHTML = '<div style="font-weight:700;margin-bottom:4px">📲 ' + t('installApp') + '</div>' +
+      '<div class="small muted" style="margin-bottom:10px">' + t('installHint') + '</div>';
+    const ib = el('button','btn btn-primary', t('installNow'));
+    ib.onclick = async () => {
+      installPromptEvt.prompt();
+      const res = await installPromptEvt.userChoice.catch(() => null);
+      if (res && res.outcome === 'accepted') { installPromptEvt = null; ci.remove(); }
+    };
+    ci.appendChild(ib); m.appendChild(ci);
+  }
 
   const c2 = el('div','card');
   c2.innerHTML = '<div style="font-weight:700;margin-bottom:10px">' + t('changePass') + '</div>' +
