@@ -8,6 +8,7 @@
 'use strict';
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -885,7 +886,7 @@ route('GET', /^\/api\/events$/, async (req, res, m, u) => {
 });
 
 route('GET', /^\/api\/health$/, async (req, res) => {
-  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.5', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
+  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.6', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
 });
 
 /* ------------------------------------------------------------- server -- */
@@ -933,6 +934,152 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+/* ---- backup to GitHub (daily, auto) + full export ---- */
+
+const GH_API = 'https://api.github.com';
+const BACKUP_REPO = process.env.BACKUP_GH_REPO || 'duc86788-cpu/ge-backups';
+const BACKUP_TOKEN = process.env.BACKUP_GH_TOKEN || '';
+let backupStatus = { last: null, ok: null, error: null, running: false };
+
+function ghReq(method, path, body) {
+  return new Promise((resolve, reject) => {
+    const r = https.request(GH_API + path, {
+      method,
+      headers: {
+        'Authorization': 'Bearer ' + BACKUP_TOKEN,
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'ge-actividades-backup',
+        'Content-Type': 'application/json',
+        'Content-Length': body ? Buffer.byteLength(body) : 0,
+      },
+      timeout: 20000,
+    }, resp => {
+      let d = ''; resp.on('data', c => d += c);
+      resp.on('end', () => resolve({ status: resp.statusCode, body: d }));
+    });
+    r.on('error', reject);
+    r.on('timeout', () => { r.destroy(new Error('timeout')); });
+    if (body) r.write(body);
+    r.end();
+  });
+}
+
+async function backupToGithub(force) {
+  if (!BACKUP_TOKEN || backupStatus.running) return;
+  backupStatus.running = true;
+  try {
+    const today = nowISO().slice(0, 10);
+    const fname = 'backup-' + today + '.json';
+    const list = await ghReq('GET', '/repos/' + BACKUP_REPO + '/contents/?ref=main', null);
+    const exists = list.status === 200 && JSON.parse(list.body).some(f => f.name === fname);
+    if (exists && !force) {
+      backupStatus.last = nowISO(); backupStatus.ok = true; backupStatus.error = null;
+      return;
+    }
+    const content = fs.readFileSync(DATA_FILE).toString('base64');
+    const payload = JSON.stringify({
+      message: 'backup ' + nowISO(),
+      content, branch: 'main',
+    });
+    const put = await ghReq('PUT', '/repos/' + BACKUP_REPO + '/contents/' + fname, payload);
+    if (put.status === 200 || put.status === 201) {
+      backupStatus.last = nowISO(); backupStatus.ok = true; backupStatus.error = null;
+      console.log('[backup] saved ' + fname + ' to ' + BACKUP_REPO);
+    } else {
+      backupStatus.ok = false; backupStatus.error = 'HTTP ' + put.status;
+      console.error('[backup] failed:', put.status, put.body.slice(0, 200));
+    }
+  } catch (e) {
+    backupStatus.ok = false; backupStatus.error = e.message;
+    console.error('[backup] failed:', e.message);
+  } finally {
+    backupStatus.running = false;
+  }
+}
+
+/* ---- store-only zip writer (no dependencies) ---- */
+const CRC_TABLE = (() => {
+  const t = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c;
+  }
+  return t;
+})();
+function crc32(buf) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function zipStore(entries) { // entries: [{name, data:Buffer}]
+  const parts = [], central = [];
+  let offset = 0;
+  const enc = s => { const b = Buffer.from(s, 'utf8'); return b; };
+  for (const e of entries) {
+    const name = enc(e.name);
+    const data = e.data;
+    const crc = crc32(data);
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0, 6);
+    lh.writeUInt16LE(0, 8); lh.writeUInt16LE(0, 10); lh.writeUInt16LE(0, 12);
+    lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(data.length, 22);
+    lh.writeUInt16LE(name.length, 26); lh.writeUInt16LE(0, 28);
+    parts.push(lh, name, data);
+    const ch = Buffer.alloc(46);
+    ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6);
+    ch.writeUInt16LE(0, 8); ch.writeUInt16LE(0, 10); ch.writeUInt16LE(0, 12);
+    ch.writeUInt16LE(0, 14); ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(data.length, 20);
+    ch.writeUInt32LE(data.length, 24); ch.writeUInt16LE(name.length, 28);
+    ch.writeUInt16LE(0, 30); ch.writeUInt16LE(0, 32); ch.writeUInt16LE(0, 34);
+    ch.writeUInt16LE(0, 36); ch.writeUInt32LE(0, 38); ch.writeUInt32LE(offset, 42);
+    central.push(Buffer.concat([ch, name]));
+    offset += 30 + name.length + data.length;
+  }
+  const cd = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10); eocd.writeUInt32LE(cd.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, cd, eocd]);
+}
+
+route('GET', /^\/api\/export$/, async (req, res, m, u) => {
+  if (!u) return bad(res, 401, 'No autenticado');
+  if (u.role !== 'admin') return bad(res, 403, 'FORBIDDEN');
+  const entries = [{ name: 'ge-data.json', data: fs.readFileSync(DATA_FILE) }];
+  const walk = dir => {
+    for (const f of fs.readdirSync(dir)) {
+      const p = path.join(dir, f);
+      if (fs.statSync(p).isFile()) entries.push({ name: 'files/' + f, data: fs.readFileSync(p) });
+      else walk(p);
+    }
+  };
+  if (fs.existsSync(FILES_DIR)) walk(FILES_DIR);
+  const zip = zipStore(entries);
+  res.writeHead(200, {
+    'Content-Type': 'application/zip',
+    'Content-Disposition': 'attachment; filename="ge-export-' + nowISO().slice(0, 10) + '.zip"',
+    'Content-Length': zip.length,
+  });
+  res.end(zip);
+});
+
+route('GET', /^\/api\/backup-status$/, async (req, res, m, u) => {
+  if (!u) return bad(res, 401, 'No autenticado');
+  if (u.role !== 'admin') return bad(res, 403, 'FORBIDDEN');
+  send(res, 200, { configured: !!BACKUP_TOKEN, repo: BACKUP_REPO, ...backupStatus });
+});
+
+route('POST', /^\/api\/backup-now$/, async (req, res, m, u) => {
+  if (!u) return bad(res, 401, 'No autenticado');
+  if (u.role !== 'admin') return bad(res, 403, 'FORBIDDEN');
+  if (!BACKUP_TOKEN) return bad(res, 400, 'BACKUP_NOT_CONFIGURED');
+  saveNow();
+  await backupToGithub(true);
+  send(res, 200, { ok: backupStatus.ok, error: backupStatus.error, at: backupStatus.last });
+});
+
 function bootstrapSeed() {
   if (data.users.length === 0) {
     const h = hashPassword('ge12345');
@@ -960,7 +1107,13 @@ function main() {
   loadSessions();
   bootstrapSeed();
   server.listen(PORT, () => {
-    console.log('GE Actividades v1.3 en http://localhost:' + PORT);
+    console.log('GE Actividades v1.6 en http://localhost:' + PORT);
+    if (BACKUP_TOKEN) {
+      setTimeout(() => backupToGithub(false), 15000);          // catch up shortly after boot
+      setInterval(() => backupToGithub(false), 30 * 60 * 1000); // then check every 30 min
+    } else {
+      console.log('[backup] BACKUP_GH_TOKEN not set — daily GitHub backup disabled');
+    }
   });
 }
 
