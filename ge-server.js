@@ -896,7 +896,7 @@ route('GET', /^\/api\/events$/, async (req, res, m, u) => {
 });
 
 route('GET', /^\/api\/health$/, async (req, res) => {
-  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.8', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
+  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.9', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
 });
 
 /* ------------------------------------------------------------- server -- */
@@ -965,6 +965,7 @@ const GH_API = 'https://api.github.com';
 const BACKUP_REPO = process.env.BACKUP_GH_REPO || 'duc86788-cpu/ge-backups';
 const BACKUP_TOKEN = process.env.BACKUP_GH_TOKEN || '';
 let backupStatus = { last: null, ok: null, error: null, running: false };
+let healAttempted = false;
 
 function ghReq(method, path, body) {
   return new Promise((resolve, reject) => {
@@ -989,6 +990,19 @@ function ghReq(method, path, body) {
   });
 }
 
+function httpsGetBuf(url) {
+  return new Promise((resolve, reject) => {
+    const r = https.get(url, { headers: { 'User-Agent': 'ge-actividades-backup' }, timeout: 30000 }, resp => {
+      if (resp.statusCode !== 200) { resp.resume(); return reject(new Error('HTTP ' + resp.statusCode)); }
+      const chunks = [];
+      resp.on('data', c => chunks.push(c));
+      resp.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+    r.on('error', reject);
+    r.on('timeout', () => r.destroy(new Error('timeout')));
+  });
+}
+
 async function backupToGithub(force) {
   if (!BACKUP_TOKEN || backupStatus.running) return;
   backupStatus.running = true;
@@ -1003,6 +1017,23 @@ async function backupToGithub(force) {
     if (sha && !force) {
       backupStatus.last = nowISO(); backupStatus.ok = true; backupStatus.error = null;
       return;
+    }
+    // SAFETY: never overwrite a richer cloud backup with a freshly-seeded, empty server.
+    // (A wiped server that failed to restore must not erase the cloud copy it failed to read.)
+    if (sha && data.tasks.length + data.updates.length + data.milestones.length === 0 && data.users.length < 5) {
+      try {
+        const cur = await ghReq('GET', '/repos/' + BACKUP_REPO + '/contents/' + fname + '?ref=main', null);
+        if (cur.status === 200) {
+          const cloud = JSON.parse(JSON.parse(cur.body).content ? Buffer.from(JSON.parse(cur.body).content, 'base64').toString('utf8') : '{}');
+          if (cloud.users && cloud.users.length > data.users.length) {
+            console.log('[backup] skipped push: local is a fresh seed (' + data.users.length +
+              ' users, no activity) but cloud has ' + cloud.users.length + ' — restoring instead');
+            backupStatus.last = nowISO(); backupStatus.ok = true; backupStatus.error = null;
+            if (!healAttempted) { healAttempted = true; restoreWithRetry(); }
+            return;
+          }
+        }
+      } catch (e) { console.error('[backup] cloud-compare failed, pushing anyway:', e.message); }
     }
     const content = fs.readFileSync(DATA_FILE).toString('base64');
     const payload = JSON.stringify({
@@ -1032,22 +1063,19 @@ async function latestBackupFromGithub() {
   const files = JSON.parse(list.body).filter(f => f.type === 'file' && f.name.startsWith('backup-') && f.name.endsWith('.json'));
   if (!files.length) return null;
   files.sort((a, b) => b.name.localeCompare(a.name)); // newest date first
-  const dl = await new Promise((resolve, reject) => {
-    const r = https.get(files[0].download_url, { headers: { 'User-Agent': 'ge-actividades-backup' } }, resp => {
-      if (resp.statusCode !== 200) { resp.resume(); return reject(new Error('HTTP ' + resp.statusCode)); }
-      const chunks = [];
-      resp.on('data', c => chunks.push(c));
-      resp.on('end', () => resolve(Buffer.concat(chunks)));
-    });
-    r.on('error', reject);
-  });
-  return JSON.parse(dl.toString('utf8'));
+  // authenticated contents API (works for private repos; no raw.githubusercontent dependency)
+  const one = await ghReq('GET', '/repos/' + BACKUP_REPO + '/contents/' + files[0].name + '?ref=main', null);
+  if (one.status !== 200) throw new Error('HTTP ' + one.status);
+  const meta = JSON.parse(one.body);
+  if (!meta.content) throw new Error('empty content (file too large for contents API)');
+  return JSON.parse(Buffer.from(meta.content, 'base64').toString('utf8'));
 }
 
 async function restoreFromGithub() {
   try {
     const restored = await latestBackupFromGithub();
     if (!restored || !restored.users || !restored.users.length) return false;
+    if (restored.users.length <= data.users.length) return false; // cloud not richer — keep local
     data = Object.assign(freshData(), restored);
     saveNow();
     backupStatus.last = nowISO(); backupStatus.ok = true;
@@ -1057,6 +1085,17 @@ async function restoreFromGithub() {
     backupStatus.ok = false; backupStatus.error = e.message;
     console.error('[backup] restore failed:', e.message);
     return false;
+  }
+}
+
+async function restoreWithRetry() {
+  let attempts = 0;
+  while (attempts < 3) {
+    attempts++;
+    if (await restoreFromGithub()) return;
+    if (!backupStatus.error) break; // repo empty / nothing richer — no point retrying
+    console.error('[backup] restore attempt ' + attempts + ' failed, retrying in 5s');
+    await new Promise(r => setTimeout(r, 5000));
   }
 }
 
@@ -1251,12 +1290,13 @@ async function main() {
   const existed = load();
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.mkdirSync(FILES_DIR, { recursive: true });
-  // if the disk was wiped (deploy / idle restart), bring data back from the cloud copy
-  if (!existed && BACKUP_TOKEN) await restoreFromGithub();
+  // cloud copy is the safety net: if the local state is thinner than the cloud's
+  // (wiped disk on deploy/idle-restart, or a half-lost state), pull the cloud back
+  if (BACKUP_TOKEN) await restoreWithRetry();
   loadSessions();
   bootstrapSeed();
   server.listen(PORT, () => {
-    console.log('GE Actividades v1.8 en http://localhost:' + PORT);
+    console.log('GE Actividades v1.9 en http://localhost:' + PORT);
     if (BACKUP_TOKEN) {
       setInterval(() => backupToGithub(false), 30 * 60 * 1000); // daily-file watchdog
     } else {
