@@ -682,6 +682,7 @@ route('POST', /^\/api\/upload$/, async (req, res, m, u) => {
   const name = crypto.randomBytes(10).toString('hex') + '.' + ext;
   fs.mkdirSync(FILES_DIR, { recursive: true });
   fs.writeFileSync(path.join(FILES_DIR, name), buf);
+  r2Push(name, buf, MIME['.' + ext] || 'application/octet-stream'); // mirror to Cloudflare
   save();
   send(res, 200, { url: '/files/' + name });
 });
@@ -895,7 +896,7 @@ route('GET', /^\/api\/events$/, async (req, res, m, u) => {
 });
 
 route('GET', /^\/api\/health$/, async (req, res) => {
-  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.7', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
+  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.8', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
 });
 
 /* ------------------------------------------------------------- server -- */
@@ -907,7 +908,22 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname.startsWith('/files/')) {
       const name = path.basename(pathname);
-      return serveStatic(res, path.join(FILES_DIR, name));
+      const local = path.join(FILES_DIR, name);
+      if (fs.existsSync(local)) return serveStatic(res, local);
+      if (R2_ON) { // local disk wiped → fetch from Cloudflare and cache locally
+        const r = await r2Do('GET', name, Buffer.alloc(0), 'binary/octet-stream');
+        if (r.status === 200 && r.buf.length) {
+          try { fs.mkdirSync(FILES_DIR, { recursive: true }); fs.writeFileSync(local, r.buf); } catch (e) { /* serve anyway */ }
+          const ext = path.extname(name).toLowerCase();
+          res.writeHead(200, {
+            'Content-Type': MIME[ext] || 'application/octet-stream',
+            'Cache-Control': 'public, max-age=3600',
+            'X-Content-Type-Options': 'nosniff',
+          });
+          return res.end(r.buf);
+        }
+      }
+      return serveStatic(res, local);
     }
 
     for (const r of routes) {
@@ -1044,6 +1060,90 @@ async function restoreFromGithub() {
   }
 }
 
+/* ---- R2 (Cloudflare) media mirror: photos/videos survive every wipe ---- */
+const R2_ENDPOINT = process.env.R2_ENDPOINT || '';
+const R2_KEY = process.env.R2_ACCESS_KEY_ID || '';
+const R2_SECRET = process.env.R2_SECRET_ACCESS_KEY || '';
+const R2_BUCKET = process.env.R2_BUCKET || 'ge-media';
+const R2_ON = !!(R2_ENDPOINT && R2_KEY && R2_SECRET);
+
+function r2Sign(method, key, body, contentType) {
+  const host = new URL(R2_ENDPOINT).host;
+  const t = new Date();
+  const amzdate = t.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const datestamp = amzdate.slice(0, 8);
+  const payloadHash = crypto.createHash('sha256').update(body).digest('hex');
+  const encKey = encodeURIComponent(key);
+  const canonical = [
+    method, '/' + R2_BUCKET + '/' + encKey, '',
+    'host:' + host + '\n' + 'x-amz-content-sha256:' + payloadHash + '\n' + 'x-amz-date:' + amzdate + '\n',
+    'host;x-amz-content-sha256;x-amz-date', payloadHash,
+  ].join('\n');
+  const scope = datestamp + '/auto/s3/aws4_request';
+  const sts = [
+    'AWS4-HMAC-SHA256', amzdate, scope,
+    crypto.createHash('sha256').update(canonical).digest('hex'),
+  ].join('\n');
+  const hm = (k, d) => crypto.createHmac('sha256', k).update(d).digest();
+  let sk = hm('AWS4' + R2_SECRET, datestamp);
+  sk = hm(sk, 'auto'); sk = hm(sk, 's3'); sk = hm(sk, 'aws4_request');
+  const sig = crypto.createHmac('sha256', sk).update(sts).digest('hex');
+  return {
+    headers: {
+      'Authorization': 'AWS4-HMAC-SHA256 Credential=' + R2_KEY + '/' + scope +
+        ', SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=' + sig,
+      'x-amz-date': amzdate,
+      'x-amz-content-sha256': payloadHash,
+      'Content-Type': contentType,
+      'Content-Length': body.length,
+    },
+    url: R2_ENDPOINT.replace(/\/+$/, '') + '/' + R2_BUCKET + '/' + encKey,
+  };
+}
+
+function r2Do(method, key, body, contentType) {
+  return new Promise((resolve) => {
+    try {
+      const { headers, url } = r2Sign(method, key, body, contentType);
+      const r = https.request(url, { method, headers, timeout: 45000 }, resp => {
+        const chunks = [];
+        resp.on('data', c => chunks.push(c));
+        resp.on('end', () => resolve({ status: resp.statusCode, buf: Buffer.concat(chunks) }));
+      });
+      r.on('error', e => resolve({ status: 0, buf: Buffer.alloc(0), err: e.message }));
+      r.on('timeout', () => r.destroy(new Error('timeout')));
+      if (body && body.length) r.write(body);
+      r.end();
+    } catch (e) { resolve({ status: 0, buf: Buffer.alloc(0), err: e.message }); }
+  });
+}
+
+const r2Queue = [];
+let r2Busy = false;
+function r2Push(key, buf, contentType) {
+  if (!R2_ON || !buf || !buf.length) return;
+  r2Queue.push({ key, buf, contentType });
+  r2Drain();
+}
+async function r2Drain() {
+  if (r2Busy) return;
+  r2Busy = true;
+  while (r2Queue.length) {
+    const job = r2Queue.shift();
+    const r = await r2Do('PUT', job.key, job.buf, job.contentType);
+    if (r.status === 200 || r.status === 201) {
+      console.log('[r2] saved ' + job.key + ' (' + job.buf.length + 'b)');
+    } else if (!job._retry) {
+      console.error('[r2] put failed, retrying:', job.key, r.status, r.err || r.buf.toString().slice(0, 120));
+      job._retry = true;
+      setTimeout(() => { r2Queue.push(job); r2Drain(); }, 15000);
+    } else {
+      console.error('[r2] put failed twice:', job.key, r.status, r.err || '');
+    }
+  }
+  r2Busy = false;
+}
+
 /* ---- store-only zip writer (no dependencies) ---- */
 const CRC_TABLE = (() => {
   const t = new Int32Array(256);
@@ -1156,7 +1256,7 @@ async function main() {
   loadSessions();
   bootstrapSeed();
   server.listen(PORT, () => {
-    console.log('GE Actividades v1.7 en http://localhost:' + PORT);
+    console.log('GE Actividades v1.8 en http://localhost:' + PORT);
     if (BACKUP_TOKEN) {
       setInterval(() => backupToGithub(false), 30 * 60 * 1000); // daily-file watchdog
     } else {
