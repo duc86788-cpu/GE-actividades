@@ -46,9 +46,18 @@ function flush() {
     const tmp = DATA_FILE + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(data));
     fs.renameSync(tmp, DATA_FILE);
+    scheduleRemotePush();
   } catch (e) { console.error('save failed:', e.message); }
 }
 function saveNow() { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; } flush(); }
+
+/* push latest data to GitHub (debounced) — keeps the cloud copy within a minute of reality */
+let remoteTimer = null;
+function scheduleRemotePush() {
+  if (!BACKUP_TOKEN) return;
+  if (remoteTimer) clearTimeout(remoteTimer);
+  remoteTimer = setTimeout(() => { remoteTimer = null; backupToGithub(true); }, 60000);
+}
 
 function load() {
   try {
@@ -886,7 +895,7 @@ route('GET', /^\/api\/events$/, async (req, res, m, u) => {
 });
 
 route('GET', /^\/api\/health$/, async (req, res) => {
-  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.6', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
+  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.7', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
 });
 
 /* ------------------------------------------------------------- server -- */
@@ -971,15 +980,18 @@ async function backupToGithub(force) {
     const today = nowISO().slice(0, 10);
     const fname = 'backup-' + today + '.json';
     const list = await ghReq('GET', '/repos/' + BACKUP_REPO + '/contents/?ref=main', null);
-    const exists = list.status === 200 && JSON.parse(list.body).some(f => f.name === fname);
-    if (exists && !force) {
+    let sha = null;
+    if (list.status === 200) {
+      for (const f of JSON.parse(list.body)) if (f.name === fname) sha = f.sha;
+    }
+    if (sha && !force) {
       backupStatus.last = nowISO(); backupStatus.ok = true; backupStatus.error = null;
       return;
     }
     const content = fs.readFileSync(DATA_FILE).toString('base64');
     const payload = JSON.stringify({
       message: 'backup ' + nowISO(),
-      content, branch: 'main',
+      content, branch: 'main', sha: sha || undefined,
     });
     const put = await ghReq('PUT', '/repos/' + BACKUP_REPO + '/contents/' + fname, payload);
     if (put.status === 200 || put.status === 201) {
@@ -994,6 +1006,41 @@ async function backupToGithub(force) {
     console.error('[backup] failed:', e.message);
   } finally {
     backupStatus.running = false;
+  }
+}
+
+/* restore on boot: after a wipe/redeploy, pull the newest backup from GitHub */
+async function latestBackupFromGithub() {
+  const list = await ghReq('GET', '/repos/' + BACKUP_REPO + '/contents/?ref=main', null);
+  if (list.status !== 200) return null;
+  const files = JSON.parse(list.body).filter(f => f.type === 'file' && f.name.startsWith('backup-') && f.name.endsWith('.json'));
+  if (!files.length) return null;
+  files.sort((a, b) => b.name.localeCompare(a.name)); // newest date first
+  const dl = await new Promise((resolve, reject) => {
+    const r = https.get(files[0].download_url, { headers: { 'User-Agent': 'ge-actividades-backup' } }, resp => {
+      if (resp.statusCode !== 200) { resp.resume(); return reject(new Error('HTTP ' + resp.statusCode)); }
+      const chunks = [];
+      resp.on('data', c => chunks.push(c));
+      resp.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+    r.on('error', reject);
+  });
+  return JSON.parse(dl.toString('utf8'));
+}
+
+async function restoreFromGithub() {
+  try {
+    const restored = await latestBackupFromGithub();
+    if (!restored || !restored.users || !restored.users.length) return false;
+    data = Object.assign(freshData(), restored);
+    saveNow();
+    backupStatus.last = nowISO(); backupStatus.ok = true;
+    console.log('[backup] RESTORED from GitHub: ' + data.users.length + ' users, ' + data.tasks.length + ' tasks');
+    return true;
+  } catch (e) {
+    backupStatus.ok = false; backupStatus.error = e.message;
+    console.error('[backup] restore failed:', e.message);
+    return false;
   }
 }
 
@@ -1100,19 +1147,20 @@ function bootstrapSeed() {
   }
 }
 
-function main() {
+async function main() {
   const existed = load();
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.mkdirSync(FILES_DIR, { recursive: true });
+  // if the disk was wiped (deploy / idle restart), bring data back from the cloud copy
+  if (!existed && BACKUP_TOKEN) await restoreFromGithub();
   loadSessions();
   bootstrapSeed();
   server.listen(PORT, () => {
-    console.log('GE Actividades v1.6 en http://localhost:' + PORT);
+    console.log('GE Actividades v1.7 en http://localhost:' + PORT);
     if (BACKUP_TOKEN) {
-      setTimeout(() => backupToGithub(false), 15000);          // catch up shortly after boot
-      setInterval(() => backupToGithub(false), 30 * 60 * 1000); // then check every 30 min
+      setInterval(() => backupToGithub(false), 30 * 60 * 1000); // daily-file watchdog
     } else {
-      console.log('[backup] BACKUP_GH_TOKEN not set — daily GitHub backup disabled');
+      console.log('[backup] BACKUP_GH_TOKEN not set — GitHub backup disabled');
     }
   });
 }
