@@ -24,7 +24,7 @@ const PORT = parseInt(process.env.PORT || '8080', 10);
 function nowISO() { return new Date().toISOString(); }
 
 function freshData() {
-  return { meta: { seq: 0, createdAt: nowISO() }, users: [], tasks: [], updates: [], schedule: [], log: [], events: [], milestones: [], sessions: {} };
+  return { meta: { seq: 0, createdAt: nowISO() }, users: [], tasks: [], updates: [], schedule: [], log: [], events: [], milestones: [], messages: [], sessions: {} };
 }
 
 let data = freshData();
@@ -63,6 +63,15 @@ function load() {
   try {
     if (fs.existsSync(DATA_FILE)) {
       data = Object.assign(freshData(), JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
+      // migrate: single assignee → assignees list (assignees[0] mirrors assignee for old clients)
+      data.tasks.forEach(t => {
+        if (!Array.isArray(t.assignees)) t.assignees = t.assignee ? [t.assignee] : [];
+        t.assignees = t.assignees.filter(x => typeof x === 'string');
+        if (t.assignee && !t.assignees.includes(t.assignee)) t.assignees.unshift(t.assignee);
+        if (!t.assignees.length && t.assignee) t.assignees = [t.assignee];
+        if (t.assignees.length && !t.assignees.includes(t.assignee)) t.assignee = t.assignees[0];
+      });
+      if (!Array.isArray(data.messages)) data.messages = [];
       return true;
     }
   } catch (e) { console.error('could not read data file, starting fresh:', e.message); }
@@ -186,7 +195,8 @@ const STATUSES = ['pending', 'in_progress', 'done'];
 
 function canSeeTask(u, t) {
   if (!u || !t) return false;
-  return isManager(u) || t.assignee === u.id || t.createdBy === u.id;
+  const assigned = Array.isArray(t.assignees) ? t.assignees : (t.assignee ? [t.assignee] : []);
+  return isManager(u) || assigned.includes(u.id) || t.createdBy === u.id;
 }
 function logVisibleTo(u, e) {
   if (!u) return false;
@@ -357,7 +367,7 @@ route('GET', /^\/api\/users$/, async (req, res, m, u) => {
   if (!isManager(u)) return bad(res, 403, 'FORBIDDEN');
   const list = data.users.map(v => {
     const p = publicUser(v);
-    p.taskCount = data.tasks.filter(t => t.assignee === v.id && t.status !== 'done').length;
+    p.taskCount = data.tasks.filter(t => (Array.isArray(t.assignees) ? t.assignees : [t.assignee]).includes(v.id) && t.status !== 'done').length;
     return p;
   });
   send(res, 200, { users: list });
@@ -437,6 +447,14 @@ route('DELETE', /^\/api\/users\/([a-z0-9]+)$/, async (req, res, m, u) => {
     if (activeAdmins.length <= 1) return bad(res, 400, 'LAST_ADMIN');
   }
   data.users = data.users.filter(x => x.id !== target.id);
+  // clean deleted user out of task assignee lists
+  data.tasks.forEach(t => {
+    if (Array.isArray(t.assignees) && t.assignees.includes(target.id)) {
+      t.assignees = t.assignees.filter(id => id !== target.id);
+      t.assignee = t.assignees[0] || null;
+      t.updatedAt = nowISO();
+    }
+  });
   killUserSessions(target.id);
   logEvent('user_deleted', u.id, { targetName: target.name });
   save();
@@ -462,7 +480,11 @@ route('POST', /^\/api\/tasks$/, async (req, res, m, u) => {
   const body = await readJSON(req, 128 * 1024);
   const title = String(body.title || '').trim().slice(0, 120);
   const desc = String(body.desc || '').trim().slice(0, 4000);
-  const assignee = String(body.assignee || '');
+  // assignees: array of user ids (new) or single assignee id (legacy)
+  let assigneeIds = Array.isArray(body.assignees)
+    ? [...new Set(body.assignees.map(x => String(x)))]
+    : (body.assignee ? [String(body.assignee)] : []);
+  assigneeIds = assigneeIds.slice(0, 20);
   const priority = ['baja', 'normal', 'alta', 'urgente'].includes(body.priority) ? body.priority : 'normal';
   const due = /^\d{4}-\d{2}-\d{2}$/.test(String(body.due || '')) ? body.due : null;
   // multi-date: array of valid YYYY-MM-DD (max 62 days), deduped; falls back to [due]
@@ -471,24 +493,30 @@ route('POST', /^\/api\/tasks$/, async (req, res, m, u) => {
     : [];
   if (!dates.length && due) dates = [due];
   if (!title) return bad(res, 400, 'NEED_TITLE');
-  const target = data.users.find(x => x.id === assignee && x.active !== false);
-  if (!target) return bad(res, 400, 'BAD_ASSIGNEE');
+  const targets = assigneeIds.map(id => data.users.find(x => x.id === id && x.active !== false));
+  if (!targets.length || targets.some(x => !x)) return bad(res, 400, 'BAD_ASSIGNEE');
+  assigneeIds = targets.map(x => x.id);
   const checklist = parseChecklist(desc);
   const t = {
-    id: nextId('t'), title, desc, assignee: target.id, priority, due: dates[0] || null, dates,
+    id: nextId('t'), title, desc, assignees: assigneeIds, assignee: assigneeIds[0], priority, due: dates[0] || null, dates,
     status: 'pending', createdBy: u.id, createdAt: nowISO(), updatedAt: nowISO(),
     completedAt: null, completedBy: null, checklist,
   };
   data.tasks.push(t);
-  logEvent('task_created', u.id, { taskId: t.id, taskTitle: title, assigneeName: target.name });
-  emitEvent('task.created', { title, taskId: t.id, by: u.name, assignee: target.name }, { users: [target.id], roles: ['admin', 'subadmin'] }, u.id);
+  const names = targets.map(x => x.name).join(', ');
+  logEvent('task_created', u.id, { taskId: t.id, taskTitle: title, assigneeName: names });
+  emitEvent('task.created', { title, taskId: t.id, by: u.name, assignee: names }, { users: assigneeIds, roles: ['admin', 'subadmin'] }, u.id);
   save(); sseBroadcast({ type: 'sync' });
   send(res, 200, { task: withNames(t) });
 });
 
 function withNames(t) {
+  const ids = Array.isArray(t.assignees) ? t.assignees : (t.assignee ? [t.assignee] : []);
   return Object.assign({}, t, {
-    assigneeName: userName(t.assignee),
+    assignees: ids,
+    assignee: ids[0] || t.assignee || null,
+    assigneeName: userName(ids[0] || t.assignee),
+    assigneeNames: ids.map(userName),
     createdByName: userName(t.createdBy),
     completedByName: t.completedBy ? userName(t.completedBy) : null,
     updateCount: data.updates.filter(x => x.taskId === t.id).length,
@@ -542,7 +570,8 @@ route('PATCH', /^\/api\/tasks\/([a-z0-9]+)$/, async (req, res, m, u) => {
   if (!t || !canSeeTask(u, t)) return bad(res, 404, 'NOT_FOUND');
   const body = await readJSON(req, 64 * 1024);
   const manager = isManager(u);
-  const isAssignee = t.assignee === u.id;
+  const assignedIds = Array.isArray(t.assignees) ? t.assignees : (t.assignee ? [t.assignee] : []);
+  const isAssignee = assignedIds.includes(u.id);
 
   // status change: assignee or manager
   if (body.status !== undefined) {
@@ -567,8 +596,8 @@ route('PATCH', /^\/api\/tasks\/([a-z0-9]+)$/, async (req, res, m, u) => {
     }
     if (prev !== t.status) {
       emitEvent('task.status', {
-        title: t.title, taskId: t.id, from: prev, to: t.status, by: u.name, assignee: userName(t.assignee),
-      }, { users: [t.assignee, t.createdBy], roles: ['admin', 'subadmin'] }, u.id);
+        title: t.title, taskId: t.id, from: prev, to: t.status, by: u.name, assignee: assignedIds.map(userName).join(', '),
+      }, { users: assignedIds.concat([t.createdBy]), roles: ['admin', 'subadmin'] }, u.id);
     }
   }
 
@@ -588,17 +617,24 @@ route('PATCH', /^\/api\/tasks\/([a-z0-9]+)$/, async (req, res, m, u) => {
         : [];
       if (dts.length) { t.dates = dts; t.due = dts[0]; }
     }
-    if (body.assignee !== undefined) {
-      const target = data.users.find(x => x.id === body.assignee && x.active !== false);
-      if (!target) return bad(res, 400, 'BAD_ASSIGNEE');
-      if (target.id !== t.assignee) {
-        const oldName = userName(t.assignee);
-        t.assignee = target.id;
-        logEvent('task_reassigned', u.id, { taskId: t.id, taskTitle: t.title, fromName: oldName, toName: target.name });
-        emitEvent('task.reassigned', { title: t.title, taskId: t.id, from: oldName, to: target.name, by: u.name }, { users: [target.id], roles: ['admin', 'subadmin'] }, u.id);
+    if (body.assignees !== undefined || body.assignee !== undefined) {
+      let ids = Array.isArray(body.assignees)
+        ? [...new Set(body.assignees.map(x => String(x)))]
+        : (body.assignee !== undefined ? [String(body.assignee)] : []);
+      ids = ids.slice(0, 20);
+      const targets = ids.map(id => data.users.find(x => x.id === id && x.active !== false));
+      if (!ids.length || targets.some(x => !x)) return bad(res, 400, 'BAD_ASSIGNEE');
+      const newIds = targets.map(x => x.id);
+      const oldNames = assignedIds.map(userName).join(', ');
+      if (JSON.stringify(newIds) !== JSON.stringify(assignedIds)) {
+        const added = newIds.filter(id => !assignedIds.includes(id));
+        t.assignees = newIds;
+        t.assignee = newIds[0];
+        logEvent('task_reassigned', u.id, { taskId: t.id, taskTitle: t.title, fromName: oldNames, toName: targets.map(x => x.name).join(', ') });
+        emitEvent('task.reassigned', { title: t.title, taskId: t.id, from: oldNames, to: targets.map(x => x.name).join(', '), by: u.name }, { users: added, roles: ['admin', 'subadmin'] }, u.id);
       }
     }
-  } else if (body.title !== undefined || body.desc !== undefined || body.assignee !== undefined || body.priority !== undefined || body.due !== undefined) {
+  } else if (body.title !== undefined || body.desc !== undefined || body.assignee !== undefined || body.assignees !== undefined || body.priority !== undefined || body.due !== undefined) {
     return bad(res, 403, 'FORBIDDEN');
   }
 
@@ -627,7 +663,7 @@ route('POST', /^\/api\/tasks\/([a-z0-9]+)\/check$/, async (req, res, m, u) => {
   if (!u) return bad(res, 401, 'No autenticado');
   const t = data.tasks.find(x => x.id === m[1]);
   if (!t || !canSeeTask(u, t)) return bad(res, 404, 'NOT_FOUND');
-  if (!isManager(u) && t.assignee !== u.id) return bad(res, 403, 'FORBIDDEN');
+  if (!isManager(u) && !(Array.isArray(t.assignees) ? t.assignees : [t.assignee]).includes(u.id)) return bad(res, 403, 'FORBIDDEN');
   const body = await readJSON(req, 16 * 1024);
   const item = (t.checklist || []).find(c => c.id === body.itemId);
   if (!item) return bad(res, 404, 'NO_ITEM');
@@ -645,7 +681,7 @@ route('POST', /^\/api\/tasks\/([a-z0-9]+)\/updates$/, async (req, res, m, u) => 
   if (!u) return bad(res, 401, 'No autenticado');
   const t = data.tasks.find(x => x.id === m[1]);
   if (!t || !canSeeTask(u, t)) return bad(res, 404, 'NOT_FOUND');
-  if (!isManager(u) && t.assignee !== u.id) return bad(res, 403, 'FORBIDDEN');
+  if (!isManager(u) && !(Array.isArray(t.assignees) ? t.assignees : [t.assignee]).includes(u.id)) return bad(res, 403, 'FORBIDDEN');
   const body = await readJSON(req, 24 * 1024 * 1024);
   const text = String(body.text || '').trim().slice(0, 2000);
   const photos = Array.isArray(body.photos) ? body.photos.filter(p => typeof p === 'string' && p.startsWith('/files/')).slice(0, 20) : [];
@@ -663,6 +699,30 @@ route('POST', /^\/api\/tasks\/([a-z0-9]+)\/updates$/, async (req, res, m, u) => 
   t.updatedAt = nowISO(); save();
   sseBroadcast({ type: 'sync' });
   send(res, 200, { update: Object.assign({}, up, { authorName: u.name }) });
+});
+
+/* ---- group chat (everyone in the app) ---- */
+
+route('GET', /^\/api\/chat$/, async (req, res, m, u) => {
+  if (!u) return bad(res, 401, 'No autenticado');
+  const msgs = (data.messages || []).slice(-200)
+    .map(x => Object.assign({}, x, { userName: userName(x.userId) }));
+  send(res, 200, { messages: msgs });
+});
+
+route('POST', /^\/api\/chat$/, async (req, res, m, u) => {
+  if (!u) return bad(res, 401, 'No autenticado');
+  const body = await readJSON(req, 16 * 1024);
+  const text = String(body.text || '').trim().slice(0, 2000);
+  if (!text) return bad(res, 400, 'NEED_TEXT');
+  const msg = { id: nextId('m'), userId: u.id, text, ts: nowISO() };
+  data.messages = (data.messages || []);
+  data.messages.push(msg);
+  if (data.messages.length > 1000) data.messages = data.messages.slice(-800); // keep the last 800
+  save();
+  const out = Object.assign({}, msg, { userName: u.name });
+  sseBroadcast({ type: 'chat', msg: out });
+  send(res, 200, { message: out });
 });
 
 /* ---- photo / video / file upload (all roles) ---- */
