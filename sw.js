@@ -1,5 +1,5 @@
 /* GE Actividades service worker — offline shell only; API always goes to the network */
-const CACHE = 'ge-shell-v2';
+const CACHE = 'ge-shell-v4';
 const SHELL = ['/', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', e => {
