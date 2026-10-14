@@ -763,10 +763,12 @@ route('GET', /^\/api\/chat$/, async (req, res, m, u) => {
 
 route('POST', /^\/api\/chat$/, async (req, res, m, u) => {
   if (!u) return bad(res, 401, 'No autenticado');
-  const body = await readJSON(req, 16 * 1024);
+  const body = await readJSON(req, 64 * 1024);
   const text = String(body.text || '').trim().slice(0, 2000);
-  if (!text) return bad(res, 400, 'NEED_TEXT');
+  const photos = Array.isArray(body.photos) ? body.photos.filter(p => typeof p === 'string' && p.startsWith('/files/')).slice(0, 4) : [];
+  if (!text && !photos.length) return bad(res, 400, 'NEED_TEXT');
   const msg = { id: nextId('m'), userId: u.id, text, ts: nowISO() };
+  if (photos.length) msg.photos = photos;
   data.messages = (data.messages || []);
   data.messages.push(msg);
   if (data.messages.length > 1000) data.messages = data.messages.slice(-800); // keep the last 800
