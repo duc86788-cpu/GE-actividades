@@ -523,10 +523,45 @@ function withNames(t) {
   });
 }
 
-/* Checklist state helper: recompute status from items. All done → done. */
-function syncChecklistStatus(t, actor) {
+/* Per-day completion: a task spanning several dates can be marked done for one
+   date without touching the others. t.doneDates lists the finished dates;
+   overall status flips to done only when every date is done. */
+function markDayDone(t, actor, ds, want) {
+  const allDates = (Array.isArray(t.dates) && t.dates.length) ? t.dates : (t.due ? [t.due] : []);
+  if (!allDates.length) return false;
+  if (!Array.isArray(t.doneDates)) t.doneDates = (t.status === 'done') ? allDates.slice() : [];
+  const had = t.doneDates.includes(ds);
+  if (had === want) return false;
+  if (want) t.doneDates.push(ds); else t.doneDates = t.doneDates.filter(x => x !== ds);
+  t.doneDates.sort();
+  t.updatedAt = nowISO();
+  const allDone = allDates.every(d => t.doneDates.includes(d));
+  const prev = t.status;
+  if (allDone && t.status !== 'done') {
+    t.status = 'done'; t.completedAt = nowISO(); t.completedBy = actor.id;
+    logEvent('task_completed', actor.id, { taskId: t.id, taskTitle: t.title, viaDayDone: true });
+    if (t.createdBy && t.createdBy !== actor.id) {
+      emitEvent('task.completed', { title: t.title, taskId: t.id, by: actor.name, at: t.completedAt },
+        { users: [t.createdBy] }, actor.id);
+    }
+    emitEvent('task.status', { title: t.title, taskId: t.id, from: prev, to: 'done', by: actor.name, assignee: userName(t.assignee) },
+      { users: (Array.isArray(t.assignees) ? t.assignees : [t.assignee]).concat([t.createdBy]), roles: ['admin', 'subadmin'] }, actor.id);
+  } else if (!allDone && t.status === 'done') {
+    t.status = 'pending'; t.completedAt = null; t.completedBy = null;
+    logEvent('task_reopened', actor.id, { taskId: t.id, taskTitle: t.title, viaDayDone: true });
+  }
+  return true;
+}
+
+/* Checklist state helper: recompute status from items. All done → done.
+   Multi-date tasks: completing the checklist marks only the day being viewed. */
+function syncChecklistStatus(t, actor, viewDate) {
   if (!t.checklist || !t.checklist.length) return false;
   const allDone = t.checklist.every(c => c.done);
+  if (Array.isArray(t.dates) && t.dates.length > 1) {
+    if (allDone && viewDate && t.dates.includes(viewDate)) return markDayDone(t, actor, viewDate, true);
+    return false;
+  }
   const prev = t.status;
   if (allDone && t.status !== 'done') {
     t.status = 'done'; t.completedAt = nowISO(); t.completedBy = actor.id;
@@ -671,9 +706,25 @@ route('POST', /^\/api\/tasks\/([a-z0-9]+)\/check$/, async (req, res, m, u) => {
   item.doneBy = item.done ? u.id : null;
   item.doneAt = item.done ? nowISO() : null;
   if (item.done) logEvent('check_done', u.id, { taskId: t.id, taskTitle: t.title, itemText: item.text.slice(0, 80) });
-  syncChecklistStatus(t, u);
+  syncChecklistStatus(t, u, typeof body.date === 'string' ? body.date : undefined);
   t.updatedAt = nowISO(); save();
   sseBroadcast({ type: 'sync' });
+  send(res, 200, { task: withNames(t) });
+});
+
+/* Mark / unmark one specific date of a task as done (per-day completion) */
+route('PATCH', /^\/api\/tasks\/([a-z0-9]+)\/daydone$/, async (req, res, m, u) => {
+  if (!u) return bad(res, 401, 'No autenticado');
+  const t = data.tasks.find(x => x.id === m[1]);
+  if (!t || !canSeeTask(u, t)) return bad(res, 404, 'NOT_FOUND');
+  if (!isManager(u) && !(Array.isArray(t.assignees) ? t.assignees : (t.assignee ? [t.assignee] : [])).includes(u.id)) return bad(res, 403, 'FORBIDDEN');
+  const body = await readJSON(req, 4 * 1024);
+  const ds = String(body.date || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) return bad(res, 400, 'BAD_DATE');
+  const allDates = (Array.isArray(t.dates) && t.dates.length) ? t.dates : (t.due ? [t.due] : []);
+  if (!allDates.includes(ds)) return bad(res, 400, 'NOT_ON_TASK');
+  markDayDone(t, u, ds, !!body.done);
+  save(); sseBroadcast({ type: 'sync' });
   send(res, 200, { task: withNames(t) });
 });
 
