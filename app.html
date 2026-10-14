@@ -92,6 +92,8 @@
   .chat-bub{background:var(--card);border:var(--bd);border-radius:14px 14px 14px 4px;padding:9px 12px;font-size:14px;line-height:1.35;word-break:break-word;box-shadow:var(--shadow)}
   .chat-row.mine .chat-bub{background:var(--brand);color:#fff;border-radius:14px 14px 4px 14px}
   .chat-time{display:block;font-size:10px;opacity:.65;margin-top:3px;text-align:right}
+  .chat-photos{margin:0 0 4px;gap:4px}
+  .chat-photos img{width:118px;height:118px;object-fit:cover;border-radius:10px;margin:0}
   .chat-bar{display:flex;gap:8px;padding:10px 0 2px;background:var(--bg);position:sticky;bottom:0}
   .chat-bar input{flex:1;border:1.5px solid var(--line);border-radius:22px;padding:11px 16px;font-size:15px;outline:none;background:var(--card);color:var(--ink)}
   .chat-send{border-radius:50%;width:44px;height:44px;padding:0;flex:none;font-size:18px}
@@ -398,7 +400,7 @@ const STR = {
     n_scheduled:' te agendó: ', n_newAccount:'Nueva cuenta: ',
     confirmDelUser:'¿Eliminar a', userDeletedMsg:'Usuario eliminado',
     cannotDeleteSelf:'No puedes eliminar tu propia cuenta',
-    version:'GE Actividades · v1.5',
+    version:'GE Actividades · v1.7',
     openDay:'Abrir el día', backToCal:'‹ Volver al calendario',
     eventsForDay:'Eventos', noEvents:'Sin eventos este día.',
     newEvent:'Nuevo evento', eventTitle:'Evento (ej. Cosecha, Corte, Secado)',
@@ -484,7 +486,7 @@ const STR = {
     n_scheduled:' scheduled you: ', n_newAccount:'New account: ',
     confirmDelUser:'Delete', userDeletedMsg:'User deleted',
     cannotDeleteSelf:'You cannot delete your own account',
-    version:'GE Actividades · v1.5',
+    version:'GE Actividades · v1.7',
     openDay:'Open day', backToCal:'‹ Back to calendar',
     eventsForDay:'Events', noEvents:'No events this day.',
     newEvent:'New event', eventTitle:'Event (e.g. Harvest, Cutting, Drying)',
@@ -1236,7 +1238,9 @@ function chatBubble(x) {
   const dte = new Date(x.ts || '');
   const time = isNaN(dte) ? '' : dte.toLocaleTimeString(LANG, {hour:'2-digit', minute:'2-digit'});
   c.innerHTML = (mine ? '' : '<div class="chat-name">' + esc(x.userName || '') + '</div>') +
-    '<div class="chat-bub">' + esc(x.text).replace(/\n/g, '<br>') +
+    '<div class="chat-bub">' +
+    ((x.photos||[]).length ? '<div class="multiPrev chat-photos">' + x.photos.map(p => '<img loading="lazy" src="' + esc(p) + '">').join('') + '</div>' : '') +
+    esc(x.text).replace(/\n/g, '<br>') +
     (time ? '<span class="chat-time">' + time + '</span>' : '') + '</div>';
   return c;
 }
@@ -1247,11 +1251,17 @@ function renderChat(m) {
   wrap.appendChild(list);
   const bar = el('div', 'chat-bar');
   const inp = el('input'); inp.placeholder = t('chatPh'); inp.maxLength = 2000; inp.autocomplete = 'off';
+  const cam = el('button', 'btn btn-ghost btn-sm chat-cam', '📷');
+  cam.type = 'button';
   const btn = el('button', 'btn btn-primary btn-sm chat-send', '➤');
   btn.type = 'button';
-  bar.append(inp, btn);
+  bar.append(cam, inp, btn);
   wrap.appendChild(bar);
   m.appendChild(wrap);
+  let pending = [];
+  function camLabel() { cam.textContent = pending.length ? '📷 ×' + pending.length : '📷'; }
+  camLabel();
+  cam.onclick = () => pickPhotos(urls => { pending = pending.concat(urls).slice(0, 4); camLabel(); });
   function draw() {
     list.innerHTML = '';
     if (!CHAT.length) { list.appendChild(el('div','empty','<div class="big">💬</div>' + t('chatEmpty'))); return; }
@@ -1261,16 +1271,16 @@ function renderChat(m) {
   draw();
   async function send() {
     const text = inp.value.trim();
-    if (!text) return;
-    btn.disabled = true; inp.disabled = true;
+    if (!text && !pending.length) return;
+    btn.disabled = true; inp.disabled = true; cam.disabled = true;
     try {
-      const r = await api('/api/chat', {method:'POST', body:JSON.stringify({text})});
-      inp.value = '';
+      const r = await api('/api/chat', {method:'POST', body:JSON.stringify({text, photos: pending})});
+      inp.value = ''; pending = []; camLabel();
       onChatMsg(r.message);
       const box = document.getElementById('chat-list');
       if (box) box.scrollTop = box.scrollHeight;
     } catch(e) { toast(e.message); }
-    inp.disabled = false; btn.disabled = false; inp.focus();
+    inp.disabled = false; btn.disabled = false; cam.disabled = false; inp.focus();
   }
   btn.onclick = send;
   inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); send(); } });
@@ -1480,19 +1490,22 @@ async function openTask(id) {
     }
   }
 
-  // admin edit + delete
-  if (ME.role === 'admin') {
+  // edit: admins AND subadmins (server allows both); delete stays admin-only
+  if (isManager()) {
     const row = el('div','row');
     const eb = el('button','btn btn-ghost btn-sm', t('edit'));
     eb.onclick = () => { ov.remove(); taskForm(x); };
-    const db = el('button','btn btn-danger btn-sm', t('delete'));
-    db.onclick = async () => {
-      if (!confirm(t('confirmDelTask') + ' "' + x.title + '"? ' + t('noUndo'))) return;
-      try { await api('/api/tasks/' + x.id, {method:'DELETE'}); ov.remove(); refreshAll(); toast(t('taskDeleted')); }
-      catch(e) { toast(e.message); }
-    };
-    row.append(eb, db);
-    body.appendChild(el('div','sect', t('adminSect')));
+    row.append(eb);
+    if (ME.role === 'admin') {
+      const db = el('button','btn btn-danger btn-sm', t('delete'));
+      db.onclick = async () => {
+        if (!confirm(t('confirmDelTask') + ' "' + x.title + '"? ' + t('noUndo'))) return;
+        try { await api('/api/tasks/' + x.id, {method:'DELETE'}); ov.remove(); refreshAll(); toast(t('taskDeleted')); }
+        catch(e) { toast(e.message); }
+      };
+      row.append(db);
+      body.appendChild(el('div','sect', t('adminSect')));
+    }
     body.appendChild(row);
   }
 
@@ -1586,7 +1599,7 @@ document.addEventListener('click', e => {
   const img = e.target.closest('.multiPrev img');
   if (!img) return;
   e.stopPropagation();
-  const wrap = img.closest('.bubble, .upd');
+  const wrap = img.closest('.bubble, .upd, .chat-bub');
   const when = (wrap && wrap.querySelector('.muted')) ? (wrap.querySelector('.muted').textContent || '').replace(/^·\s*/, '') : '';
   openLightbox(img.src, when);
 });
