@@ -398,7 +398,7 @@ const STR = {
     n_scheduled:' te agendó: ', n_newAccount:'Nueva cuenta: ',
     confirmDelUser:'¿Eliminar a', userDeletedMsg:'Usuario eliminado',
     cannotDeleteSelf:'No puedes eliminar tu propia cuenta',
-    version:'GE Actividades · v1.4',
+    version:'GE Actividades · v1.5',
     openDay:'Abrir el día', backToCal:'‹ Volver al calendario',
     eventsForDay:'Eventos', noEvents:'Sin eventos este día.',
     newEvent:'Nuevo evento', eventTitle:'Evento (ej. Cosecha, Corte, Secado)',
@@ -411,7 +411,7 @@ const STR = {
     checklist:'Lista de tareas', ckProgress:'completado',
     camera:'📸 Cámara', gallery:'🖼️ Galería', takePhoto:'Tomar foto', download:'Descargar',
     noDueTasks:'Tareas sin fecha (no están en el calendario)',
-    alertToday:'Tienes tareas hoy', multiDates:'Fechas', pickDays:'Toca los días que quieras (uno por uno, no hace falta que sean seguidos)',
+    alertToday:'Tienes tareas hoy', multiDates:'Fechas', pickDays:'Toca los días que quieras (uno por uno, no hace falta que sean seguidos)', dayDone:'Hecho este día', dayUndone:'Quitar lo de este día', dayMarkedDone:'Día marcado como hecho', daysDone:'días hechos',
     thread:'Conversación', replyTo:'Responder', react:'👍 Reaccionar',
     video:'🎥 Video', addLine:'➕', onlyMine:'Solo mías', allTasks:'Todas',
     history:'Historial del día', showHistory:'Ver historial', hideHistory:'Ocultar historial',
@@ -484,7 +484,7 @@ const STR = {
     n_scheduled:' scheduled you: ', n_newAccount:'New account: ',
     confirmDelUser:'Delete', userDeletedMsg:'User deleted',
     cannotDeleteSelf:'You cannot delete your own account',
-    version:'GE Actividades · v1.4',
+    version:'GE Actividades · v1.5',
     openDay:'Open day', backToCal:'‹ Back to calendar',
     eventsForDay:'Events', noEvents:'No events this day.',
     newEvent:'New event', eventTitle:'Event (e.g. Harvest, Cutting, Drying)',
@@ -497,7 +497,7 @@ const STR = {
     checklist:'Checklist', ckProgress:'done',
     camera:'📸 Camera', gallery:'🖼️ Gallery', takePhoto:'Take photo', download:'Download',
     noDueTasks:'Tasks without a date (not on the calendar)',
-    alertToday:'You have tasks today', multiDates:'Dates', pickDays:'Tap the days you want (one by one, they don\'t have to be in a row)',
+    alertToday:'You have tasks today', multiDates:'Dates', pickDays:'Tap the days you want (one by one, they don\'t have to be in a row)', dayDone:'Done this day', dayUndone:'Unmark this day', dayMarkedDone:'Day marked done', daysDone:'days done',
     thread:'Conversation', replyTo:'Reply', react:'👍 React',
     video:'🎥 Video', addLine:'➕', onlyMine:'Only mine', allTasks:'All',
     history:'Day history', showHistory:'View history', hideHistory:'Hide history',
@@ -526,6 +526,11 @@ function assigneeNamesText(x) {
   const n = (Array.isArray(x.assigneeNames) && x.assigneeNames.length) ? x.assigneeNames
     : (x.assigneeName ? [x.assigneeName] : []);
   return n.join(', ');
+}
+/* was a task done on this specific date? (per-day completion; legacy tasks fall back to whole-task status) */
+function doneOn(x, ds) {
+  if (Array.isArray(x.doneDates)) return x.doneDates.includes(ds);
+  return x.status === 'done';
 }
 /* date badge: single day, a consecutive run (first→last), or scattered days (first +N) */
 function datesBadge(x) {
@@ -773,7 +778,7 @@ function renderCalendar(m) {
   const dayMap = {};
   TASKS.forEach(t2 => {
     const days = (Array.isArray(t2.dates) && t2.dates.length) ? t2.dates : (t2.due ? [t2.due] : []);
-    days.forEach(d => { dayMap[d] = dayMap[d] || {}; if (t2.status === 'done') dayMap[d].done = true; else dayMap[d].task = true; });
+    days.forEach(d => { dayMap[d] = dayMap[d] || {}; if (doneOn(t2, d)) dayMap[d].done = true; else dayMap[d].task = true; });
   });
   MILES.forEach(mi => { dayMap[mi.date] = dayMap[mi.date] || {}; dayMap[mi.date].ev = true; });
 
@@ -898,7 +903,7 @@ function renderDayView(m) {
   if (!dayTasks.length) {
     m.appendChild(el('div','small muted', t('noTasks')));
   } else {
-    dayTasks.forEach(t2 => m.appendChild(dayTaskCard(t2)));
+    dayTasks.forEach(t2 => m.appendChild(dayTaskCard(t2, ds)));
   }
 
   // Day history — managers only (employees never see it)
@@ -935,9 +940,10 @@ function milestoneCard(mi) {
 }
 
 /* Task card in the day view — clean; responses hidden until tapped */
-function dayTaskCard(t2) {
+function dayTaskCard(t2, ds) {
   const c = el('div','card tl-task');
   const mine = isAssigned(t2, ME.id);
+  const dayDone = doneOn(t2, ds);
   const ck = t2.checklist || [];
   const ckDone = ck.filter(x => x.done).length;
   let html = '<div class="row" style="align-items:flex-start">' +
@@ -946,19 +952,34 @@ function dayTaskCard(t2) {
       '<div style="font-weight:700">' + esc(t2.title) + '</div>' +
       '<div class="meta-line">' + t('assignedTo2') + ' <b>' + esc(assigneeNamesText(t2)) + '</b>' + (mine ? ' ' + t('you') : '') + '</div>' +
       '<div class="meta-line">' + t('createdFrom') + ' ' + esc(t2.createdByName) + ' · ' + fmtTs(t2.createdAt) + '</div>';
-  if (t2.status === 'done') {
+  if (dayDone) {
     html += '<div class="meta-line" style="color:var(--ok)">' + t('completedAt') + ' ' + fmtTs(t2.completedAt) + ' ' + t('completedBy') + ' ' + esc(t2.completedByName||'—') + '</div>';
   }
   if (ck.length) {
     html += '<div class="ckbar"><div style="width:' + Math.round(ckDone/ck.length*100) + '%"></div></div>' +
       '<div class="meta-line">' + ckDone + '/' + ck.length + ' ' + t('ckProgress') + '</div>';
   }
-  html += '</div><span class="badge b-' + esc(t2.status) + '">' + stEs(t2.status) + '</span></div>';
+  html += '</div><span class="badge ' + (dayDone ? 'b-done' : 'b-' + esc(t2.status)) + '">' + stEs(dayDone ? 'done' : t2.status) + '</span></div>';
   c.innerHTML = html;
+
+  // per-day done toggle (assignee or manager) — marks ONLY this date
+  if (isManager() || mine) {
+    const dd = el('button','btn btn-sm ' + (dayDone ? 'btn-ghost' : 'btn-primary'), dayDone ? t('dayUndone') : t('dayDone'));
+    dd.style.marginTop = '8px';
+    dd.onclick = async () => {
+      try {
+        const resp = await api('/api/tasks/' + t2.id + '/daydone', { method: 'PATCH', body: JSON.stringify({ date: ds, done: !dayDone }) });
+        const idx = TASKS.findIndex(x => x.id === t2.id);
+        if (idx > -1) TASKS[idx] = resp.task;
+        render();
+      } catch(e) { toast(e.message); }
+    };
+    c.appendChild(dd);
+  }
 
   // checklist rows (always visible for assignee/manager — the working surface)
   if (ck.length && (isManager() || mine)) {
-    ck.forEach(item => c.appendChild(ckRow(t2, item)));
+    ck.forEach(item => c.appendChild(ckRow(t2, item, ds)));
   }
 
   // collapsible responses
@@ -1002,7 +1023,7 @@ async function fillResponses(wrap, taskId) {
 }
 
 /* checklist row with live toggle — checkmark appears instantly, server confirms after */
-function ckRow(t2, item) {
+function ckRow(t2, item, ds) {
   const r = el('div','ckrow' + (item.done ? ' done' : ''));
   const canCheck = isManager() || isAssigned(t2, ME.id);
   r.innerHTML = '<div class="ckbox">' + (item.done ? '✓' : '') + '</div>' +
@@ -1021,11 +1042,12 @@ function ckRow(t2, item) {
       const localTask = TASKS.find(x => x.id === t2.id);
       if (localTask) { const li = localTask.checklist.find(c => c.id === item.id); if (li) { li.done = willBeDone; li.doneBy = willBeDone ? ME.id : null; li.doneAt = willBeDone ? new Date().toISOString() : null; li.doneByName = willBeDone ? ME.name : null; } }
       try {
-        const resp = await api('/api/tasks/' + t2.id + '/check', {method:'POST', body:JSON.stringify({itemId:item.id})});
+        const resp = await api('/api/tasks/' + t2.id + '/check', {method:'POST', body:JSON.stringify({itemId:item.id, date: ds || undefined})});
         const idx = TASKS.findIndex(x => x.id === t2.id);
         if (idx > -1) TASKS[idx] = resp.task;
         const ck2 = resp.task.checklist || [];
         if (resp.task.status === 'done' && ck2.length && ck2.every(x => x.done)) toast(t('taskAutoDone'));
+        else if (ds && Array.isArray(resp.task.doneDates) && resp.task.doneDates.includes(ds) && !(t2.doneDates||[]).includes(ds)) toast(t('dayMarkedDone'));
         render();
       } catch(e2) {
         // rollback on failure
@@ -1337,7 +1359,7 @@ function taskCard(x) {
         (x.desc ? '<div class="small muted" style="margin-top:3px;white-space:pre-wrap">' + esc(x.desc.length>140?x.desc.slice(0,140)+'…':x.desc) + '</div>' : '') +
         '<div class="row small muted" style="margin-top:8px;flex-wrap:wrap;gap:6px">' +
           '<span class="badge b-' + esc(x.status) + '">' + stEs(x.status) + '</span>' +
-          (x.due ? '<span class="' + (isOverdue(x)?'overdue':'') + '">' + datesBadge(x) + '</span>' : '') +
+          (x.due ? '<span class="' + (isOverdue(x)?'overdue':'') + '">' + datesBadge(x) + ((Array.isArray(x.doneDates) && x.doneDates.length && Array.isArray(x.dates) && x.dates.length > 1) ? ' · ' + x.doneDates.length + '/' + x.dates.length + ' ' + t('daysDone') : '') + '</span>' : '') +
           (x.updateCount ? '<span>💬 ' + x.updateCount + '</span>' : '') +
           (ck.length ? '<span>☑️ ' + ckDone + '/' + ck.length + '</span>' : '') +
         '</div>' +
