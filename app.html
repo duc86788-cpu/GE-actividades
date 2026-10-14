@@ -83,19 +83,6 @@
   nav button.on{color:var(--brand)}
   nav .ico{font-size:19px;line-height:1}
 
-  /* ---------- chat ---------- */
-  .chat-wrap{display:flex;flex-direction:column;height:calc(100vh - 210px);min-height:340px}
-  .chat-list{flex:1;overflow-y:auto;padding:4px 2px 10px;display:flex;flex-direction:column;gap:8px}
-  .chat-row{display:flex;flex-direction:column;align-items:flex-start;max-width:82%}
-  .chat-row.mine{align-self:flex-end;align-items:flex-end}
-  .chat-name{font-size:11px;font-weight:700;color:var(--brand);margin:0 4px 2px}
-  .chat-bub{background:var(--card);border:var(--bd);border-radius:14px 14px 14px 4px;padding:9px 12px;font-size:14px;line-height:1.35;word-break:break-word;box-shadow:var(--shadow)}
-  .chat-row.mine .chat-bub{background:var(--brand);color:#fff;border-radius:14px 14px 4px 14px}
-  .chat-time{display:block;font-size:10px;opacity:.65;margin-top:3px;text-align:right}
-  .chat-bar{display:flex;gap:8px;padding:10px 0 2px;background:var(--bg);position:sticky;bottom:0}
-  .chat-bar input{flex:1;border:1.5px solid var(--line);border-radius:22px;padding:11px 16px;font-size:15px;outline:none;background:var(--card);color:var(--ink)}
-  .chat-send{border-radius:50%;width:44px;height:44px;padding:0;flex:none;font-size:18px}
-
   /* ---------- pieces ---------- */
   .card{background:var(--card);border:var(--bd);border-radius:14px;box-shadow:var(--shadow);padding:14px;margin-bottom:12px}
   .row{display:flex;align-items:center;gap:10px}
@@ -292,7 +279,6 @@ let token = localStorage.getItem('ge_token') || '';
 let LANG = localStorage.getItem('ge_lang') || '';
 let ME = null;
 let TASKS = [], USERS = [], SCHEDULE = [], LOG = [], MILES = [];
-let CHAT = [], CHAT_LOADED = false;
 let tab = 'calendar';
 let taskFilter = 'open';
 let evSource = null;
@@ -398,7 +384,7 @@ const STR = {
     n_scheduled:' te agendó: ', n_newAccount:'Nueva cuenta: ',
     confirmDelUser:'¿Eliminar a', userDeletedMsg:'Usuario eliminado',
     cannotDeleteSelf:'No puedes eliminar tu propia cuenta',
-    version:'GE Actividades · v1.4',
+    version:'GE Actividades · v1.3',
     openDay:'Abrir el día', backToCal:'‹ Volver al calendario',
     eventsForDay:'Eventos', noEvents:'Sin eventos este día.',
     newEvent:'Nuevo evento', eventTitle:'Evento (ej. Cosecha, Corte, Secado)',
@@ -411,7 +397,7 @@ const STR = {
     checklist:'Lista de tareas', ckProgress:'completado',
     camera:'📸 Cámara', gallery:'🖼️ Galería', takePhoto:'Tomar foto', download:'Descargar',
     noDueTasks:'Tareas sin fecha (no están en el calendario)',
-    alertToday:'Tienes tareas hoy', multiDates:'Fechas', pickDays:'Toca los días que quieras (uno por uno, no hace falta que sean seguidos)',
+    alertToday:'Tienes tareas hoy', multiDates:'Fechas',
     thread:'Conversación', replyTo:'Responder', react:'👍 Reaccionar',
     video:'🎥 Video', addLine:'➕', onlyMine:'Solo mías', allTasks:'Todas',
     history:'Historial del día', showHistory:'Ver historial', hideHistory:'Ocultar historial',
@@ -427,9 +413,6 @@ const STR = {
     camNotAvailable:'La cámara no está disponible en este dispositivo',
     taskAutoDone:'¡Todas las casillas marcadas — tarea completada! 🎉',
     ckWho:'por', noChecklist:null,
-    tab_chat:'Chat', chatEmpty:'Sin mensajes todavía. ¡Escribe el primero!',
-    chatPh:'Escribe un mensaje…', needAssignee:'Elige al menos una persona',
-    assignMulti:'¿Quiénes? (toca para marcar uno o varios)',
   },
   en: {
     subtitle:'Tasks, updates and schedules for your team',
@@ -484,7 +467,7 @@ const STR = {
     n_scheduled:' scheduled you: ', n_newAccount:'New account: ',
     confirmDelUser:'Delete', userDeletedMsg:'User deleted',
     cannotDeleteSelf:'You cannot delete your own account',
-    version:'GE Actividades · v1.4',
+    version:'GE Actividades · v1.3',
     openDay:'Open day', backToCal:'‹ Back to calendar',
     eventsForDay:'Events', noEvents:'No events this day.',
     newEvent:'New event', eventTitle:'Event (e.g. Harvest, Cutting, Drying)',
@@ -497,7 +480,7 @@ const STR = {
     checklist:'Checklist', ckProgress:'done',
     camera:'📸 Camera', gallery:'🖼️ Gallery', takePhoto:'Take photo', download:'Download',
     noDueTasks:'Tasks without a date (not on the calendar)',
-    alertToday:'You have tasks today', multiDates:'Dates', pickDays:'Tap the days you want (one by one, they don\'t have to be in a row)',
+    alertToday:'You have tasks today', multiDates:'Dates',
     thread:'Conversation', replyTo:'Reply', react:'👍 React',
     video:'🎥 Video', addLine:'➕', onlyMine:'Only mine', allTasks:'All',
     history:'Day history', showHistory:'View history', hideHistory:'Hide history',
@@ -513,29 +496,9 @@ const STR = {
     camNotAvailable:'Camera not available on this device',
     taskAutoDone:'All boxes checked — task completed! 🎉',
     ckWho:'by', noChecklist:null,
-    tab_chat:'Chat', chatEmpty:'No messages yet. Be the first to write!',
-    chatPh:'Type a message…', needAssignee:'Pick at least one person',
-    assignMulti:'Who? (tap to select one or more)',
   },
 };
 function t(k){ return (STR[LANG] && STR[LANG][k]) || k; }
-/* multi-assignee helpers (assignees list; falls back to legacy single assignee) */
-function assignedTo(x) { return Array.isArray(x.assignees) ? x.assignees : (x.assignee ? [x.assignee] : []); }
-function isAssigned(x, id) { return assignedTo(x).includes(id); }
-function assigneeNamesText(x) {
-  const n = (Array.isArray(x.assigneeNames) && x.assigneeNames.length) ? x.assigneeNames
-    : (x.assigneeName ? [x.assigneeName] : []);
-  return n.join(', ');
-}
-/* date badge: single day, a consecutive run (first→last), or scattered days (first +N) */
-function datesBadge(x) {
-  const ds = (Array.isArray(x.dates) && x.dates.length) ? x.dates : (x.due ? [x.due] : []);
-  if (!ds.length) return '';
-  if (ds.length === 1) return '📅 ' + fmtDateShort(ds[0]);
-  const span = Math.round((new Date(ds[ds.length-1] + 'T12:00:00') - new Date(ds[0] + 'T12:00:00')) / 86400000);
-  if (span === ds.length - 1) return '📅 ' + fmtDateShort(ds[0]) + '→' + fmtDateShort(ds[ds.length-1]);
-  return '📅 ' + fmtDateShort(ds[0]) + ' +' + (ds.length - 1);
-}
 const ST_KEY = {pending:'st_pending', in_progress:'st_in_progress', done:'st_done'};
 const PR_KEY = {baja:'pr_baja', normal:'pr_normal', alta:'pr_alta', urgente:'pr_urgente'};
 const ROLE_KEY = {admin:'role_admin', subadmin:'role_subadmin', employee:'role_employee'};
@@ -651,7 +614,7 @@ function checkDayAlerts() {
   const key = 'ge_alerted_' + today;
   // on-login alert: my tasks for today, once per day per device
   if (!localStorage.getItem(key)) {
-    const mine = TASKS.filter(x => isAssigned(x, ME.id) && x.status !== 'done' && (
+    const mine = TASKS.filter(x => x.assignee === ME.id && x.status !== 'done' && (
       (Array.isArray(x.dates) && x.dates.includes(today)) || (!Array.isArray(x.dates) && x.due === today)
     ));
     if (mine.length) {
@@ -665,7 +628,7 @@ function checkDayAlerts() {
   const now = new Date();
   const eightKey = 'ge_alert8_' + today;
   if (now.getHours() >= 8 && !localStorage.getItem(eightKey)) {
-    const mine = TASKS.filter(x => isAssigned(x, ME.id) && x.status !== 'done' && (
+    const mine = TASKS.filter(x => x.assignee === ME.id && x.status !== 'done' && (
       (Array.isArray(x.dates) && x.dates.includes(today)) || (!Array.isArray(x.dates) && x.due === today)
     ));
     if (mine.length) {
@@ -679,12 +642,7 @@ function checkDayAlerts() {
 function connectEvents() {
   if (evSource) evSource.close();
   evSource = new EventSource('/api/events');
-  evSource.onmessage = (e) => {
-    let d = null;
-    try { d = JSON.parse(e.data); } catch(_) {}
-    if (d && d.type === 'chat' && d.msg) { onChatMsg(d.msg); return; }
-    refreshAll(true);
-  };
+  evSource.onmessage = () => refreshAll(true);
 }
 
 /* ---------------- data refresh ---------------- */
@@ -709,7 +667,6 @@ function renderBell(n) {
 const TABS = [
   {id:'calendar', ico:'📅', key:'tab_cal'},
   {id:'tasks', ico:'✅', key:'tab_tasks'},
-  {id:'chat', ico:'💬', key:'tab_chat'},
   {id:'team', ico:'👥', key:'tab_team', manager:true},
   {id:'me', ico:'⚙️', key:'tab_me'},
 ];
@@ -733,7 +690,6 @@ function render() {
   if (tab === 'calendar' && dayOpen) renderDayView(m);
   else if (tab === 'calendar') renderCalendar(m);
   else if (tab === 'tasks') renderTasks(m);
-  else if (tab === 'chat') renderChat(m);
   else if (tab === 'team') renderTeam(m);
   else if (tab === 'me') renderMe(m);
 }
@@ -817,7 +773,7 @@ function taskOnDate(x, ds) {
   return x.due === ds;
 }
 function visibleTasks() {
-  const list = onlyMine ? TASKS.filter(x => isAssigned(x, ME.id) || x.createdBy === ME.id) : TASKS;
+  const list = onlyMine ? TASKS.filter(x => x.assignee === ME.id || x.createdBy === ME.id) : TASKS;
   return list;
 }
 
@@ -840,12 +796,12 @@ function renderDaySummary(m) {
   });
   dayTasks.forEach(t2 => {
     const card = el('div','card tl-task');
-    const mine = isAssigned(t2, ME.id);
+    const mine = t2.assignee === ME.id;
     let html = '<div class="row" style="align-items:flex-start">' +
       '<div class="prio p-' + esc(t2.priority) + '" style="margin-top:7px"></div>' +
       '<div class="grow">' +
         '<div style="font-weight:700">' + esc(t2.title) + '</div>' +
-        '<div class="meta-line">' + t('assignedTo2') + ' <b>' + esc(assigneeNamesText(t2)) + '</b>' + (mine ? ' ' + t('you') : '') + '</div>' +
+        '<div class="meta-line">' + t('assignedTo2') + ' <b>' + esc(t2.assigneeName) + '</b>' + (mine ? ' ' + t('you') : '') + '</div>' +
         '<div class="meta-line">' + t('createdFrom') + ' ' + esc(t2.createdByName) + ' · ' + fmtTs(t2.createdAt) + '</div>';
     if (t2.status === 'done') {
       html += '<div class="meta-line" style="color:var(--ok)">' + t('completedAt') + ' ' + fmtTs(t2.completedAt) + ' ' + t('completedBy') + ' ' + esc(t2.completedByName||'—') + '</div>';
@@ -862,13 +818,13 @@ function renderDaySummary(m) {
     m.appendChild(el('div','sect', t('noDueTasks')));
     noDue.forEach(t2 => {
       const card = el('div','card tl-task');
-      const mine = isAssigned(t2, ME.id);
+      const mine = t2.assignee === ME.id;
       const ck = t2.checklist || [];
       card.innerHTML = '<div class="row" style="align-items:flex-start">' +
         '<div class="prio p-' + esc(t2.priority) + '" style="margin-top:7px"></div>' +
         '<div class="grow">' +
           '<div style="font-weight:700">' + esc(t2.title) + '</div>' +
-          '<div class="meta-line">' + t('assignedTo2') + ' <b>' + esc(assigneeNamesText(t2)) + '</b>' + (mine ? ' ' + t('you') : '') + '</div>' +
+          '<div class="meta-line">' + t('assignedTo2') + ' <b>' + esc(t2.assigneeName) + '</b>' + (mine ? ' ' + t('you') : '') + '</div>' +
           (ck.length ? '<div class="meta-line">☑️ ' + ck.filter(i=>i.done).length + '/' + ck.length + '</div>' : '') +
         '</div><span class="badge b-' + esc(t2.status) + '">' + stEs(t2.status) + '</span></div>';
       card.onclick = () => openTask(t2.id);
@@ -937,14 +893,14 @@ function milestoneCard(mi) {
 /* Task card in the day view — clean; responses hidden until tapped */
 function dayTaskCard(t2) {
   const c = el('div','card tl-task');
-  const mine = isAssigned(t2, ME.id);
+  const mine = t2.assignee === ME.id;
   const ck = t2.checklist || [];
   const ckDone = ck.filter(x => x.done).length;
   let html = '<div class="row" style="align-items:flex-start">' +
     '<div class="prio p-' + esc(t2.priority) + '" style="margin-top:7px"></div>' +
     '<div class="grow">' +
       '<div style="font-weight:700">' + esc(t2.title) + '</div>' +
-      '<div class="meta-line">' + t('assignedTo2') + ' <b>' + esc(assigneeNamesText(t2)) + '</b>' + (mine ? ' ' + t('you') : '') + '</div>' +
+      '<div class="meta-line">' + t('assignedTo2') + ' <b>' + esc(t2.assigneeName) + '</b>' + (mine ? ' ' + t('you') : '') + '</div>' +
       '<div class="meta-line">' + t('createdFrom') + ' ' + esc(t2.createdByName) + ' · ' + fmtTs(t2.createdAt) + '</div>';
   if (t2.status === 'done') {
     html += '<div class="meta-line" style="color:var(--ok)">' + t('completedAt') + ' ' + fmtTs(t2.completedAt) + ' ' + t('completedBy') + ' ' + esc(t2.completedByName||'—') + '</div>';
@@ -1004,7 +960,7 @@ async function fillResponses(wrap, taskId) {
 /* checklist row with live toggle — checkmark appears instantly, server confirms after */
 function ckRow(t2, item) {
   const r = el('div','ckrow' + (item.done ? ' done' : ''));
-  const canCheck = isManager() || isAssigned(t2, ME.id);
+  const canCheck = isManager() || t2.assignee === ME.id;
   r.innerHTML = '<div class="ckbox">' + (item.done ? '✓' : '') + '</div>' +
     '<div class="grow"><div class="cktext">' + esc(item.text) + '</div>' +
     (item.done && item.doneAt ? '<div class="ckmeta">' + t('doneBy') + ' ' + esc(item.doneByName || '') + ' · ' + fmtTs(item.doneAt) + '</div>' : '') + '</div>' +
@@ -1049,7 +1005,7 @@ async function openCheckThread(t2, item) {
   sheet.querySelector('.x').onclick = () => ov.remove();
   ov.appendChild(sheet); document.body.appendChild(ov);
   const listEl = sheet.querySelector('#ct-list');
-  const canPost = isManager() || isAssigned(t2, ME.id);
+  const canPost = isManager() || t2.assignee === ME.id;
 
   async function loadThread() {
     try {
@@ -1176,7 +1132,7 @@ function renderTasks(m) {
 
   let list = TASKS.slice();
   if (taskFilter === 'open') list = list.filter(x => x.status !== 'done');
-  else if (taskFilter === 'mine') list = list.filter(x => isAssigned(x, ME.id) && x.status !== 'done');
+  else if (taskFilter === 'mine') list = list.filter(x => x.assignee === ME.id && x.status !== 'done');
   else if (taskFilter === 'done') list = list.filter(x => x.status === 'done');
 
   if (!list.length) {
@@ -1186,75 +1142,6 @@ function renderTasks(m) {
   }
   list.forEach(x => m.appendChild(taskCard(x)));
 }
-/* ================= CHAT ================= */
-async function loadChat() {
-  try {
-    const d = await api('/api/chat');
-    CHAT = d.messages || [];
-    CHAT_LOADED = true;
-    if (tab === 'chat') render();
-  } catch(e) { toast(e.message); }
-}
-function onChatMsg(msg) {
-  if (CHAT.some(x => x.id === msg.id)) return;
-  CHAT.push(msg);
-  if (CHAT.length > 300) CHAT = CHAT.slice(-200);
-  if (tab === 'chat') {
-    const box = document.getElementById('chat-list');
-    if (box) {
-      const empty = box.querySelector('.empty'); if (empty) empty.remove();
-      box.appendChild(chatBubble(msg));
-      box.scrollTop = box.scrollHeight;
-    }
-  }
-}
-function chatBubble(x) {
-  const mine = x.userId === ME.id;
-  const c = el('div', 'chat-row' + (mine ? ' mine' : ''));
-  const dte = new Date(x.ts || '');
-  const time = isNaN(dte) ? '' : dte.toLocaleTimeString(LANG, {hour:'2-digit', minute:'2-digit'});
-  c.innerHTML = (mine ? '' : '<div class="chat-name">' + esc(x.userName || '') + '</div>') +
-    '<div class="chat-bub">' + esc(x.text).replace(/\n/g, '<br>') +
-    (time ? '<span class="chat-time">' + time + '</span>' : '') + '</div>';
-  return c;
-}
-function renderChat(m) {
-  if (!CHAT_LOADED) loadChat();
-  const wrap = el('div', 'chat-wrap');
-  const list = el('div', 'chat-list'); list.id = 'chat-list';
-  wrap.appendChild(list);
-  const bar = el('div', 'chat-bar');
-  const inp = el('input'); inp.placeholder = t('chatPh'); inp.maxLength = 2000; inp.autocomplete = 'off';
-  const btn = el('button', 'btn btn-primary btn-sm chat-send', '➤');
-  btn.type = 'button';
-  bar.append(inp, btn);
-  wrap.appendChild(bar);
-  m.appendChild(wrap);
-  function draw() {
-    list.innerHTML = '';
-    if (!CHAT.length) { list.appendChild(el('div','empty','<div class="big">💬</div>' + t('chatEmpty'))); return; }
-    CHAT.forEach(x => list.appendChild(chatBubble(x)));
-    requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; });
-  }
-  draw();
-  async function send() {
-    const text = inp.value.trim();
-    if (!text) return;
-    btn.disabled = true; inp.disabled = true;
-    try {
-      const r = await api('/api/chat', {method:'POST', body:JSON.stringify({text})});
-      inp.value = '';
-      onChatMsg(r.message);
-      const box = document.getElementById('chat-list');
-      if (box) box.scrollTop = box.scrollHeight;
-    } catch(e) { toast(e.message); }
-    inp.disabled = false; btn.disabled = false; inp.focus();
-  }
-  btn.onclick = send;
-  inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); send(); } });
-  requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; });
-}
-
 /* ================= PERSON VIEW: one member, all their tasks ================= */
 function openPersonView(userId) {
   const u = USERS.find(x => x.id === userId);
@@ -1268,7 +1155,7 @@ function openPersonView(userId) {
   const isMgr = ME.role === 'admin' || ME.role === 'subadmin';
 
   function render2() {
-    const mine = TASKS.filter(x => isAssigned(x, userId));
+    const mine = TASKS.filter(x => x.assignee === userId);
     const ck = t => (t.checklist || []);
     const pend = mine.filter(x => x.status === 'pending');
     const prog = mine.filter(x => x.status === 'in_progress');
@@ -1326,7 +1213,7 @@ function openPersonView(userId) {
 
 function taskCard(x) {
   const c = el('div','card');
-  const mine = isAssigned(x, ME.id);
+  const mine = x.assignee === ME.id;
   const ck = x.checklist || [];
   const ckDone = ck.filter(i => i.done).length;
   c.innerHTML =
@@ -1337,11 +1224,11 @@ function taskCard(x) {
         (x.desc ? '<div class="small muted" style="margin-top:3px;white-space:pre-wrap">' + esc(x.desc.length>140?x.desc.slice(0,140)+'…':x.desc) + '</div>' : '') +
         '<div class="row small muted" style="margin-top:8px;flex-wrap:wrap;gap:6px">' +
           '<span class="badge b-' + esc(x.status) + '">' + stEs(x.status) + '</span>' +
-          (x.due ? '<span class="' + (isOverdue(x)?'overdue':'') + '">' + datesBadge(x) + '</span>' : '') +
+          (x.due ? '<span class="' + (isOverdue(x)?'overdue':'') + '">📅 ' + fmtDateShort(x.due) + ((Array.isArray(x.dates) && x.dates.length > 1) ? '→' + fmtDateShort(x.dates[x.dates.length-1]) : '') + '</span>' : '') +
           (x.updateCount ? '<span>💬 ' + x.updateCount + '</span>' : '') +
           (ck.length ? '<span>☑️ ' + ckDone + '/' + ck.length + '</span>' : '') +
         '</div>' +
-        '<div class="meta-line">👤 ' + esc(assigneeNamesText(x)) + (mine ? ' <b style="color:var(--brand)">' + t('you') + '</b>' : '') + '</div>' +
+        '<div class="meta-line">👤 ' + esc(x.assigneeName) + (mine ? ' <b style="color:var(--brand)">' + t('you') + '</b>' : '') + '</div>' +
       '</div>' +
       '<div style="font-size:22px;color:#cbd5e1">›</div>' +
     '</div>';
@@ -1401,14 +1288,14 @@ async function openTask(id) {
   try { d = await api('/api/tasks/' + id); } catch(e) { toast(e.message); return; }
   const x = d.task, updates = d.updates;
   const manager = isManager();
-  const mine = isAssigned(x, ME.id);
+  const mine = x.assignee === ME.id;
 
   const ov = el('div','overlay');
   const sheet = el('div','sheet');
   sheet.innerHTML =
     '<div class="sheet-head"><h2>' + esc(x.title) + '</h2><button class="x">✕</button></div>' +
     '<div class="sheet-body">' +
-      '<div class="meta-line">' + t('assignedTo') + ' <b style="color:var(--ink)">' + esc(assigneeNamesText(x)) + '</b> · ' + t('createdBy') + ' ' + esc(x.createdByName) + '</div>' +
+      '<div class="meta-line">' + t('assignedTo') + ' <b style="color:var(--ink)">' + esc(x.assigneeName) + '</b> · ' + t('createdBy') + ' ' + esc(x.createdByName) + '</div>' +
       '<div class="meta-line">' + t('taskCreated2') + ' ' + fmtTs(x.createdAt) + '</div>' +
       (x.completedAt ? '<div class="meta-line" style="color:var(--ok)">' + t('completedAt') + ' ' + fmtTs(x.completedAt) + ' ' + t('completedBy') + ' ' + esc(x.completedByName||'—') + '</div>' : '') +
       '<div class="row small" style="flex-wrap:wrap;gap:6px;margin:10px 0">' +
@@ -1674,24 +1561,19 @@ function taskForm(existing, presetAssignee) {
       '<div class="small muted" style="margin-top:6px">' + (LANG==='es'
         ? 'Cada línea = una casilla. Enter = nueva casilla. Borrar en línea vacía = quitar casilla.'
         : 'Each line = one checkbox. Enter = new checkbox. Backspace on an empty line removes it.') + '</div></div>' +
-      '<div class="field"><label>' + t('assignMulti') + '</label><div id="tf-assignees">' +
-        USERS.filter(u => u.active).map(u =>
-          '<button type="button" class="chip' + ((existing && assignedTo(existing).includes(u.id)) || (!existing && presetAssignee === u.id) ? ' on' : '') + '" data-id="' + u.id + '" style="margin:0 6px 8px 0">' + esc(u.name) + '</button>').join('') +
-      '</div></div>' +
-      '<div class="field"><label>' + t('priority').replace(':','') + '</label><select id="tf-prio">' +
-        ['baja','normal','alta','urgente'].map(p => '<option value="' + p + '"' + (existing && existing.priority === p ? ' selected' : '') + '>' + prEs(p) + '</option>').join('') +
+      '<div class="row"><div class="field grow"><label>' + t('assignTo') + '</label><select id="tf-assignee">' +
+        USERS.filter(u => u.active).map(u => '<option value="' + u.id + '"' + ((existing && existing.assignee === u.id) || (!existing && presetAssignee === u.id) ? ' selected' : '') + '>' + esc(u.name) + '</option>').join('') +
       '</select></div>' +
+      '<div class="field grow"><label>' + t('priority').replace(':','') + '</label><select id="tf-prio">' +
+        ['baja','normal','alta','urgente'].map(p => '<option value="' + p + '"' + (existing && existing.priority === p ? ' selected' : '') + '>' + prEs(p) + '</option>').join('') +
+      '</select></div></div>' +
       '<div class="field"><label>' + t('dueDate') + ' *</label><input id="tf-due" type="date" value="' + esc(existing?(existing.due||''):'') + '"></div>' +
       '<div class="field"><label>' + t('multiDates') + '</label>' +
       '<div class="row"><input id="tf-days" type="number" min="1" max="62" value="1" style="width:90px" inputmode="numeric">' +
-      '<span class="small muted" style="padding:0 10px">' + (LANG==='es' ? 'días seguidos (1 = solo ese día)' : 'days in a row (1 = just that day)') + '</span></div>' +
-      '<div class="small muted" style="margin-top:8px">' + t('pickDays') + '</div>' +
-      '<div id="tf-cal"></div>' +
-      '<div id="tf-sel" class="small" style="margin-top:4px;color:var(--brand);font-weight:600"></div></div>' +
+      '<span class="small muted" style="padding:0 10px">' + (LANG==='es' ? 'días seguidos (1 = solo ese día)' : 'days in a row (1 = just that day)') + '</span></div></div>' +
       '<button class="btn btn-primary" id="tf-save">' + (isEdit ? t('save') : t('createTask')) + '</button>' +
     '</div>';
   sheet.querySelector('.x').onclick = () => ov.remove();
-  sheet.querySelectorAll('#tf-assignees .chip').forEach(b => { b.onclick = () => b.classList.toggle('on'); });
   ov.appendChild(sheet); document.body.appendChild(ov);
 
   /* --- checklist editor: rows with ☐ + input; Enter adds row, Backspace on empty removes --- */
@@ -1729,56 +1611,6 @@ function taskForm(existing, presetAssignee) {
     : (existing && existing.desc ? existing.desc.split('\n') : ['']);
   prefill.forEach(v => addRow(v));
 
-  /* --- day picker: tap any day to add/remove individual dates (Mon/Thu/Sun style) --- */
-  let pkMonth = existing && existing.due ? new Date(existing.due + 'T12:00:00') : new Date();
-  const selExtra = new Set(existing && Array.isArray(existing.dates) ? existing.dates : []);
-  const calBox = sheet.querySelector('#tf-cal');
-  const selBox = sheet.querySelector('#tf-sel');
-  function drawSel() {
-    const dueV = sheet.querySelector('#tf-due').value;
-    const all = [...new Set([...selExtra, dueV].filter(Boolean))].sort();
-    const shown = all.map(d => d.slice(5));
-    selBox.textContent = shown.length > 1
-      ? (shown.slice(0, 10).join(' · ') + (shown.length > 10 ? ' +' + (shown.length - 10) : '') + '  (' + all.length + ')')
-      : '';
-  }
-  function drawCal() {
-    const y = pkMonth.getFullYear(), mo = pkMonth.getMonth();
-    const monthName = pkMonth.toLocaleDateString(LANG, {month:'long', year:'numeric'});
-    const dows = LANG === 'es' ? ['D','L','M','X','J','V','S'] : ['S','M','T','W','T','F','S'];
-    let html = '<div class="row" style="justify-content:space-between;margin:8px 0 2px">' +
-      '<button type="button" class="cal-nav" id="pk-prev">‹</button>' +
-      '<b class="small" style="text-transform:capitalize">' + esc(monthName) + '</b>' +
-      '<button type="button" class="cal-nav" id="pk-next">›</button></div>';
-    html += '<div class="cal-grid">' + dows.map(d => '<div class="cal-dow">' + d + '</div>').join('');
-    const firstDow = new Date(y, mo, 1).getDay();
-    const dim = new Date(y, mo + 1, 0).getDate();
-    const prevDim = new Date(y, mo, 0).getDate();
-    for (let i = firstDow - 1; i >= 0; i--) html += '<div class="cal-cell other">' + (prevDim - i) + '</div>';
-    const todayStr = new Date().toISOString().slice(0,10);
-    for (let d = 1; d <= dim; d++) {
-      const ds = y + '-' + pad2(mo + 1) + '-' + pad2(d);
-      html += '<div class="cal-cell' + (selExtra.has(ds) ? ' sel' : '') + (ds === todayStr ? ' today' : '') + '" data-d="' + ds + '">' + d + '</div>';
-    }
-    const total = firstDow + dim;
-    const remain = (7 - (total % 7)) % 7;
-    for (let d = 1; d <= remain; d++) html += '<div class="cal-cell other">' + d + '</div>';
-    html += '</div>';
-    calBox.innerHTML = html;
-    calBox.querySelector('#pk-prev').onclick = () => { pkMonth = new Date(y, mo - 1, 1); drawCal(); };
-    calBox.querySelector('#pk-next').onclick = () => { pkMonth = new Date(y, mo + 1, 1); drawCal(); };
-    calBox.querySelectorAll('.cal-cell[data-d]').forEach(c => {
-      c.onclick = () => {
-        const ds = c.dataset.d;
-        if (selExtra.has(ds)) selExtra.delete(ds);
-        else { if (selExtra.size >= 62) { toast('62 max'); return; } selExtra.add(ds); }
-        drawCal(); drawSel();
-      };
-    });
-  }
-  drawCal(); drawSel();
-  sheet.querySelector('#tf-due').addEventListener('change', drawSel);
-
   sheet.querySelector('#tf-save').onclick = async () => {
     const lines = [...editor.querySelectorAll('input')].map(i => i.value.trim()).filter(Boolean);
     // build the date list: start date + N days in a row
@@ -1792,21 +1624,15 @@ function taskForm(existing, presetAssignee) {
         dates.push(d.toISOString().slice(0,10));
       }
     }
-    // merge in the individually picked days (tap-calendar), deduped + sorted
-    const union = new Set(dates);
-    selExtra.forEach(d => union.add(d));
-    dates = [...union].sort();
-    if (dates.length > 62) { toast('62 max'); return; }
     const payload = {
       title: sheet.querySelector('#tf-title').value.trim(),
       desc: lines.map(l => '[ ] ' + l).join('\n'),
-      assignees: [...sheet.querySelectorAll('#tf-assignees .chip.on')].map(b => b.dataset.id),
+      assignee: sheet.querySelector('#tf-assignee').value,
       priority: sheet.querySelector('#tf-prio').value,
       due: dates[0] || null,
       dates,
     };
     if (!payload.title) { toast(t('needTitle')); return; }
-    if (!payload.assignees.length) { toast(t('needAssignee')); return; }
     if (!payload.due) { toast(t('needDate')); return; }
     try {
       if (isEdit) await api('/api/tasks/' + existing.id, {method:'PATCH', body:JSON.stringify(payload)});
