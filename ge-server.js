@@ -501,6 +501,7 @@ route('POST', /^\/api\/tasks$/, async (req, res, m, u) => {
     due = dates[0];
     priority = 'normal';
   }
+  const ttype = (body.type === 'ongoing' || body.type === 'duration') ? body.type : (dates.length > 1 ? 'ongoing' : 'duration');
   if (!title) return bad(res, 400, 'NEED_TITLE');
   const targets = assigneeIds.map(id => data.users.find(x => x.id === id && x.active !== false));
   if (!targets.length || targets.some(x => !x)) return bad(res, 400, 'BAD_ASSIGNEE');
@@ -509,7 +510,7 @@ route('POST', /^\/api\/tasks$/, async (req, res, m, u) => {
   const t = {
     id: nextId('t'), title, desc, assignees: assigneeIds, assignee: assigneeIds[0], priority, due: dates[0] || null, dates,
     status: 'pending', createdBy: u.id, createdAt: nowISO(), updatedAt: nowISO(),
-    completedAt: null, completedBy: null, checklist,
+    completedAt: null, completedBy: null, checklist, type: ttype,
   };
   data.tasks.push(t);
   const names = targets.map(x => x.name).join(', ');
@@ -518,6 +519,28 @@ route('POST', /^\/api\/tasks$/, async (req, res, m, u) => {
   save(); sseBroadcast({ type: 'sync' });
   send(res, 200, { task: withNames(t) });
 });
+
+/* v1.9 task types: 'ongoing' (same task each day — per-day checklists and
+   completion) vs 'duration' (ONE task with several days to finish it). */
+function taskDatesOf(t) {
+  return (Array.isArray(t.dates) && t.dates.length) ? t.dates : (t.due ? [t.due] : []);
+}
+function migrateTask(t) {
+  if (!t.type) t.type = taskDatesOf(t).length > 1 ? 'ongoing' : 'duration';
+  if (t.type === 'ongoing') {
+    if (!t.checkDone) t.checkDone = {};
+    const ds = taskDatesOf(t);
+    if (!Array.isArray(t.doneDates)) t.doneDates = (t.status === 'done') ? ds.slice() : [];
+    // keep history: days already marked done get their checklist seeded as done
+    (t.checklist || []).forEach(c => {
+      if (c.done) ds.forEach(d => {
+        t.checkDone[d] = t.checkDone[d] || {};
+        if (!t.checkDone[d][c.id]) t.checkDone[d][c.id] = { done: true, by: c.doneBy || null, at: c.doneAt || null };
+      });
+    });
+  }
+  return t;
+}
 
 function withNames(t) {
   const ids = Array.isArray(t.assignees) ? t.assignees : (t.assignee ? [t.assignee] : []);
@@ -564,29 +587,35 @@ function markDayDone(t, actor, ds, want) {
   return true;
 }
 
-/* Checklist state helper: recompute status from items. All done → done.
-   Multi-date tasks: completing the checklist marks only the day being viewed. */
+/* Checklist state helper (duration tasks): shared list; all done → the whole
+   task is done — finishing early closes the remaining days too.
+   Ongoing tasks handle per-day completion in the check route instead. */
 function syncChecklistStatus(t, actor, viewDate) {
   if (!t.checklist || !t.checklist.length) return false;
-  const allDone = t.checklist.every(c => c.done);
-  if (Array.isArray(t.dates) && t.dates.length > 1) {
-    if (allDone && viewDate && t.dates.includes(viewDate)) return markDayDone(t, actor, viewDate, true);
+  if (t.type === 'ongoing') {
+    if (!viewDate) return false;
+    const dayState = (t.checkDone && t.checkDone[viewDate]) || {};
+    if (t.checklist.every(c => dayState[c.id] && dayState[c.id].done)) return markDayDone(t, actor, viewDate, true);
     return false;
   }
+  const allDone = t.checklist.every(c => c.done);
   const prev = t.status;
   if (allDone && t.status !== 'done') {
     t.status = 'done'; t.completedAt = nowISO(); t.completedBy = actor.id;
+    const ds = taskDatesOf(t);
+    if (ds.length) t.doneDates = ds.slice(); // finished early → remaining days show done
     logEvent('task_completed', actor.id, { taskId: t.id, taskTitle: t.title, viaChecklist: true });
     if (t.createdBy && t.createdBy !== actor.id) {
       emitEvent('task.completed', { title: t.title, taskId: t.id, by: actor.name, at: t.completedAt },
         { users: [t.createdBy] }, actor.id);
     }
     emitEvent('task.status', { title: t.title, taskId: t.id, from: prev, to: 'done', by: actor.name, assignee: userName(t.assignee) },
-      { users: [t.assignee, t.createdBy], roles: ['admin', 'subadmin'] }, actor.id);
+      { users: (Array.isArray(t.assignees) ? t.assignees : [t.assignee]).concat([t.createdBy]), roles: ['admin', 'subadmin'] }, actor.id);
     return true;
   }
   if (!allDone && t.status === 'done') {
     t.status = 'pending'; t.completedAt = null; t.completedBy = null;
+    t.doneDates = [];
     logEvent('task_reopened', actor.id, { taskId: t.id, taskTitle: t.title, viaChecklist: true });
     return true;
   }
@@ -628,6 +657,10 @@ route('PATCH', /^\/api\/tasks\/([a-z0-9]+)$/, async (req, res, m, u) => {
     if (t.status === 'done') {
       t.completedAt = nowISO();
       t.completedBy = u.id;
+      if (t.type !== 'ongoing') {
+        const ds = taskDatesOf(t);
+        if (ds.length) t.doneDates = ds.slice(); // duration: finishing closes every day
+      }
       logEvent('task_completed', u.id, { taskId: t.id, taskTitle: t.title });
       // notify the creator (not the actor): who completed + exact time
       if (t.createdBy && t.createdBy !== u.id) {
@@ -638,6 +671,7 @@ route('PATCH', /^\/api\/tasks\/([a-z0-9]+)$/, async (req, res, m, u) => {
     } else {
       if (prev === 'done') logEvent('task_reopened', u.id, { taskId: t.id, taskTitle: t.title });
       t.completedAt = null; t.completedBy = null;
+      if (t.type !== 'ongoing') t.doneDates = [];
       if (prev !== t.status) logEvent('task_status', u.id, { taskId: t.id, taskTitle: t.title, to: t.status });
     }
     if (prev !== t.status) {
@@ -662,6 +696,9 @@ route('PATCH', /^\/api\/tasks\/([a-z0-9]+)$/, async (req, res, m, u) => {
         ? [...new Set(body.dates.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(String(d))).map(d => String(d)).sort())].slice(0, 62)
         : [];
       if (dts.length) { t.dates = dts; t.due = dts[0]; }
+    }
+    if (body.type === 'ongoing' || body.type === 'duration') {
+      if (t.type !== body.type) { t.type = body.type; migrateTask(t); }
     }
     if (body.assignees !== undefined || body.assignee !== undefined) {
       let ids = Array.isArray(body.assignees)
@@ -713,6 +750,24 @@ route('POST', /^\/api\/tasks\/([a-z0-9]+)\/check$/, async (req, res, m, u) => {
   const body = await readJSON(req, 16 * 1024);
   const item = (t.checklist || []).find(c => c.id === body.itemId);
   if (!item) return bad(res, 404, 'NO_ITEM');
+  if (t.type === 'ongoing') {
+    // per-day checklist: the checked state belongs to the viewed date only
+    const ds = typeof body.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : null;
+    if (!ds || !taskDatesOf(t).includes(ds)) return bad(res, 400, 'NEED_DATE');
+    t.checkDone = t.checkDone || {};
+    t.checkDone[ds] = t.checkDone[ds] || {};
+    const want = body.done === undefined ? !(t.checkDone[ds][item.id] && t.checkDone[ds][item.id].done) : !!body.done;
+    t.checkDone[ds][item.id] = { done: want, by: want ? u.id : null, at: want ? nowISO() : null };
+    if (want) logEvent('check_done', u.id, { taskId: t.id, taskTitle: t.title, itemText: item.text.slice(0, 80), day: ds });
+    // keep the day consistent: completing all items completes that day; unchecking reopens it
+    const dayState = t.checkDone[ds];
+    const allDone = (t.checklist || []).every(c => dayState[c.id] && dayState[c.id].done);
+    if (allDone) markDayDone(t, u, ds, true);
+    else if ((t.doneDates || []).includes(ds)) markDayDone(t, u, ds, false);
+    t.updatedAt = nowISO(); save();
+    sseBroadcast({ type: 'sync' });
+    return send(res, 200, { task: withNames(t) });
+  }
   item.done = !item.done;
   item.doneBy = item.done ? u.id : null;
   item.doneAt = item.done ? nowISO() : null;
@@ -734,6 +789,7 @@ route('PATCH', /^\/api\/tasks\/([a-z0-9]+)\/daydone$/, async (req, res, m, u) =>
   if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) return bad(res, 400, 'BAD_DATE');
   const allDates = (Array.isArray(t.dates) && t.dates.length) ? t.dates : (t.due ? [t.due] : []);
   if (!allDates.includes(ds)) return bad(res, 400, 'NOT_ON_TASK');
+  if (t.type === 'duration' && allDates.length > 1) return bad(res, 400, 'DURATION_NO_DAYDONE');
   markDayDone(t, u, ds, !!body.done);
   save(); sseBroadcast({ type: 'sync' });
   send(res, 200, { task: withNames(t) });
@@ -1020,7 +1076,7 @@ route('GET', /^\/api\/events$/, async (req, res, m, u) => {
 });
 
 route('GET', /^\/api\/health$/, async (req, res) => {
-  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.8', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
+  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.9', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
 });
 
 /* ------------------------------------------------------------- server -- */
@@ -1417,6 +1473,7 @@ async function main() {
   // cloud copy is the safety net: if the local state is thinner than the cloud's
   // (wiped disk on deploy/idle-restart, or a half-lost state), pull the cloud back
   if (BACKUP_TOKEN) await restoreWithRetry();
+  data.tasks.forEach(migrateTask); // v1.9: assign types to pre-existing tasks
   loadSessions();
   bootstrapSeed();
   server.listen(PORT, () => {
