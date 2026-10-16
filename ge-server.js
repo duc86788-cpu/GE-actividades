@@ -542,6 +542,37 @@ function migrateTask(t) {
   return t;
 }
 
+/* v1.9.1 data correction: tasks fully completed under the OLD rules (one check
+   = done for every day) keep only the day they were actually completed; the
+   other days reopen with fresh checklists. Runs once (marker in meta.migV). */
+function migrateTypesV2() {
+  if (data.meta && data.meta.migV >= 2) return;
+  (data.tasks || []).forEach(t => {
+    if (t.type !== 'ongoing') return;
+    const ds = taskDatesOf(t);
+    if (!Array.isArray(t.doneDates)) t.doneDates = (t.status === 'done') ? ds.slice() : [];
+    if (t.status === 'done' && ds.length > 1 && t.doneDates.length === ds.length) {
+      const doneDay = t.completedAt ? t.completedAt.slice(0, 10) : null;
+      const keep = (doneDay && ds.includes(doneDay)) ? [doneDay] : [];
+      const doneBy = t.completedBy || null, doneAt = t.completedAt || null;
+      const dropped = t.doneDates.filter(d => !keep.includes(d));
+      t.doneDates = keep;
+      dropped.forEach(d => { if (t.checkDone) delete t.checkDone[d]; });
+      if (keep.length === 1) {
+        t.checkDone = t.checkDone || {};
+        t.checkDone[keep[0]] = t.checkDone[keep[0]] || {};
+        (t.checklist || []).forEach(c => {
+          if (!t.checkDone[keep[0]][c.id]) t.checkDone[keep[0]][c.id] = { done: true, by: doneBy, at: doneAt };
+        });
+      }
+      if (keep.length < ds.length) { t.status = 'pending'; t.completedAt = null; t.completedBy = null; }
+      console.log('[mig2] ' + t.title + ': kept ' + JSON.stringify(keep) + ', reopened ' + dropped.length + ' day(s)');
+    }
+  });
+  data.meta = data.meta || {};
+  data.meta.migV = 2;
+}
+
 function withNames(t) {
   const ids = Array.isArray(t.assignees) ? t.assignees : (t.assignee ? [t.assignee] : []);
   const cu = data.users.find(x => x.id === t.createdBy);
@@ -1076,7 +1107,7 @@ route('GET', /^\/api\/events$/, async (req, res, m, u) => {
 });
 
 route('GET', /^\/api\/health$/, async (req, res) => {
-  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.9', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
+  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.9.1', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
 });
 
 /* ------------------------------------------------------------- server -- */
@@ -1474,6 +1505,8 @@ async function main() {
   // (wiped disk on deploy/idle-restart, or a half-lost state), pull the cloud back
   if (BACKUP_TOKEN) await restoreWithRetry();
   data.tasks.forEach(migrateTask); // v1.9: assign types to pre-existing tasks
+  migrateTypesV2();                // v1.9.1: undo old "done everywhere" carry-over
+  save();                          // persist migration markers immediately
   loadSessions();
   bootstrapSeed();
   server.listen(PORT, () => {
