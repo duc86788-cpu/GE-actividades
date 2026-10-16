@@ -368,6 +368,8 @@ const STR = {
     confirmDelTask:'¿Eliminar la tarea', noUndo:'No se puede deshacer.',
     taskDeleted:'Tarea eliminada', stateNow:'Estado:',
     newTask:'Nueva tarea', editTask:'Editar tarea', title:'Título',
+    addActivity:'Añadir actividad', addedBy:'Añadida por',
+    empNote:'Se agrega a tus tareas del día elegido. No puedes modificar tareas existentes.',
     descOpt:'Descripción (opcional)', assignTo:'Asignar a', dueDate:'Fecha límite (opcional)',
     save:'Guardar', createTask:'Crear tarea', taskCreated:'Tarea creada ✅', taskUpdated:'Tarea actualizada',
     needTitle:'Falta el título',
@@ -400,7 +402,7 @@ const STR = {
     n_scheduled:' te agendó: ', n_newAccount:'Nueva cuenta: ',
     confirmDelUser:'¿Eliminar a', userDeletedMsg:'Usuario eliminado',
     cannotDeleteSelf:'No puedes eliminar tu propia cuenta',
-    version:'GE Actividades · v1.7',
+    version:'GE Actividades · v1.8',
     openDay:'Abrir el día', backToCal:'‹ Volver al calendario',
     eventsForDay:'Eventos', noEvents:'Sin eventos este día.',
     newEvent:'Nuevo evento', eventTitle:'Evento (ej. Cosecha, Corte, Secado)',
@@ -454,6 +456,8 @@ const STR = {
     confirmDelTask:'Delete task', noUndo:'This cannot be undone.',
     taskDeleted:'Task deleted', stateNow:'Status:',
     newTask:'New task', editTask:'Edit task', title:'Title',
+    addActivity:'Add activity', addedBy:'Added by',
+    empNote:'This is added to your tasks for the chosen day. You cannot modify existing tasks.',
     descOpt:'Description (optional)', assignTo:'Assign to', dueDate:'Due date (optional)',
     save:'Save', createTask:'Create task', taskCreated:'Task created ✅', taskUpdated:'Task updated',
     needTitle:'Title is required',
@@ -486,7 +490,7 @@ const STR = {
     n_scheduled:' scheduled you: ', n_newAccount:'New account: ',
     confirmDelUser:'Delete', userDeletedMsg:'User deleted',
     cannotDeleteSelf:'You cannot delete your own account',
-    version:'GE Actividades · v1.7',
+    version:'GE Actividades · v1.8',
     openDay:'Open day', backToCal:'‹ Back to calendar',
     eventsForDay:'Events', noEvents:'No events this day.',
     newEvent:'New event', eventTitle:'Event (e.g. Harvest, Cutting, Drying)',
@@ -729,8 +733,9 @@ function buildNav() {
   });
   const cur = TABS.find(x => x.id === tab) || TABS[0];
   $('#h-title').textContent = t(cur.key);
-  // FAB: managers can create tasks; on calendar tab, managers can also create schedule
-  const showFab = isManager() && (tab === 'tasks' || tab === 'calendar');
+  // FAB: everyone can create on the tasks tab (employees get the quick "add activity" form);
+  // on calendar tab, managers can also create schedule
+  const showFab = (tab === 'tasks') || (isManager() && tab === 'calendar');
   $('#fab').classList.toggle('hidden', !showFab);
 }
 
@@ -1318,11 +1323,16 @@ function openPersonView(userId) {
       '<div class="small muted" style="margin-top:8px">@' + esc(u.username) + ' · ' + roleEs(u.role) + '</div>';
     body.innerHTML = ''; body.appendChild(stats);
 
-    // quick actions for managers
+    // quick actions: managers assign tasks; employees add their own activity
     if (isMgr) {
       const qa = el('div','row'); qa.style.margin = '0 0 12px';
       const at = el('button','btn btn-primary btn-sm', '➕ ' + t('assignTask'));
       at.onclick = () => { ov.remove(); taskForm(null, u.id); };
+      qa.appendChild(at); body.appendChild(qa);
+    } else if (u.id === ME.id) {
+      const qa = el('div','row'); qa.style.margin = '0 0 12px';
+      const at = el('button','btn btn-primary btn-sm', '➕ ' + t('addActivity'));
+      at.onclick = () => { ov.remove(); taskFormEmp(); };
       qa.appendChild(at); body.appendChild(qa);
     }
 
@@ -1369,6 +1379,7 @@ function taskCard(x) {
         (x.desc ? '<div class="small muted" style="margin-top:3px;white-space:pre-wrap">' + esc(x.desc.length>140?x.desc.slice(0,140)+'…':x.desc) + '</div>' : '') +
         '<div class="row small muted" style="margin-top:8px;flex-wrap:wrap;gap:6px">' +
           '<span class="badge b-' + esc(x.status) + '">' + stEs(x.status) + '</span>' +
+          (x.createdByRole === 'employee' ? '<span>➕ ' + t('addedBy') + ' ' + esc(x.createdByName || '') + '</span>' : '') +
           (x.due ? '<span class="' + (isOverdue(x)?'overdue':'') + '">' + datesBadge(x) + ((Array.isArray(x.doneDates) && x.doneDates.length && Array.isArray(x.dates) && x.dates.length > 1) ? ' · ' + x.doneDates.length + '/' + x.dates.length + ' ' + t('daysDone') : '') + '</span>' : '') +
           (x.updateCount ? '<span>💬 ' + x.updateCount + '</span>' : '') +
           (ck.length ? '<span>☑️ ' + ckDone + '/' + ck.length + '</span>' : '') +
@@ -1852,6 +1863,39 @@ function taskForm(existing, presetAssignee) {
   setTimeout(() => sheet.querySelector('#tf-title').focus(), 80);
 }
 
+/* ---------- employee quick add: own activity only (v1.8) ---------- */
+function taskFormEmp() {
+  const ov = el('div','overlay'); const sheet = el('div','sheet');
+  const today = new Date().toISOString().slice(0,10);
+  sheet.innerHTML =
+    '<div class="sheet-head"><h2>➕ ' + t('addActivity') + '</h2><button class="x">✕</button></div>' +
+    '<div class="sheet-body">' +
+      '<div class="small muted" style="margin-bottom:10px">' + t('empNote') + '</div>' +
+      '<div class="field"><label>' + t('title') + '</label><input id="ef-title" maxlength="120"></div>' +
+      '<div class="field"><label>' + t('descOpt') + '</label><textarea id="ef-desc" rows="3" maxlength="2000"></textarea></div>' +
+      '<div class="field"><label>' + t('dueDate') + '</label><input id="ef-due" type="date" value="' + today + '"></div>' +
+      '<button class="btn btn-primary" id="ef-save">' + t('createTask') + '</button>' +
+    '</div>';
+  sheet.querySelector('.x').onclick = () => ov.remove();
+  ov.onclick = e => { if (e.target === ov) ov.remove(); };
+  ov.appendChild(sheet); document.body.appendChild(ov);
+  sheet.querySelector('#ef-save').onclick = async () => {
+    const title = sheet.querySelector('#ef-title').value.trim();
+    if (!title) { toast(t('needTitle')); return; }
+    const b = sheet.querySelector('#ef-save'); b.disabled = true;
+    try {
+      await api('/api/tasks', {method:'POST', body:JSON.stringify({
+        title,
+        desc: sheet.querySelector('#ef-desc').value.trim(),
+        due: sheet.querySelector('#ef-due').value || today,
+        assignees: [ME.id],
+      })});
+      ov.remove(); refreshAll(); toast(t('taskCreated'));
+    } catch(e2) { toast(e2.message); b.disabled = false; }
+  };
+  setTimeout(() => sheet.querySelector('#ef-title').focus(), 80);
+}
+
 /* ---------- schedule form (manager) ---------- */
 function schedForm(existing) {
   const isEdit = !!existing;
@@ -2147,7 +2191,7 @@ $('#bell').onclick = async () => {
 
 /* ================= FAB ================= */
 $('#fab').onclick = () => {
-  if (tab === 'tasks') taskForm();
+  if (tab === 'tasks') { if (isManager()) taskForm(); else taskFormEmp(); }
   else if (tab === 'calendar') {
     // quick chooser: task vs event
     const ov = el('div','overlay'); const sheet = el('div','sheet');
