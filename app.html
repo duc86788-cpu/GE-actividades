@@ -195,6 +195,11 @@
   .ckrow .ckmeta{font-size:11px;color:var(--muted)}
   .ckbar{height:5px;border-radius:3px;background:var(--chip);overflow:hidden;margin:8px 0 4px}
   .ckbar div{height:100%;background:var(--ok);transition:width .25s}
+  .type-tag{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;white-space:nowrap}
+  .t-daily{background:#ccfbf1;color:#0f766e}
+  .t-dur{background:#fef3c7;color:#b45309}
+  html[data-theme="dark"] .t-daily{background:#134e4a;color:#5eead4}
+  html[data-theme="dark"] .t-dur{background:#78350f;color:#fcd34d}
 
   /* camera */
   #cam-view{position:fixed;inset:0;background:#000;z-index:80;display:flex;flex-direction:column}
@@ -370,6 +375,7 @@ const STR = {
     newTask:'Nueva tarea', editTask:'Editar tarea', title:'Título',
     addActivity:'Añadir actividad', addedBy:'Añadida por',
     empNote:'Se agrega a tus tareas del día elegido. No puedes modificar tareas existentes.',
+    typeQ:'Tipo de tarea', typeDaily:'Diaria', typeDuration:'Con plazo',
     descOpt:'Descripción (opcional)', assignTo:'Asignar a', dueDate:'Fecha límite (opcional)',
     save:'Guardar', createTask:'Crear tarea', taskCreated:'Tarea creada ✅', taskUpdated:'Tarea actualizada',
     needTitle:'Falta el título',
@@ -402,7 +408,7 @@ const STR = {
     n_scheduled:' te agendó: ', n_newAccount:'Nueva cuenta: ',
     confirmDelUser:'¿Eliminar a', userDeletedMsg:'Usuario eliminado',
     cannotDeleteSelf:'No puedes eliminar tu propia cuenta',
-    version:'GE Actividades · v1.8',
+    version:'GE Actividades · v1.9',
     openDay:'Abrir el día', backToCal:'‹ Volver al calendario',
     eventsForDay:'Eventos', noEvents:'Sin eventos este día.',
     newEvent:'Nuevo evento', eventTitle:'Evento (ej. Cosecha, Corte, Secado)',
@@ -458,6 +464,7 @@ const STR = {
     newTask:'New task', editTask:'Edit task', title:'Title',
     addActivity:'Add activity', addedBy:'Added by',
     empNote:'This is added to your tasks for the chosen day. You cannot modify existing tasks.',
+    typeQ:'Task type', typeDaily:'Daily', typeDuration:'Deadline',
     descOpt:'Description (optional)', assignTo:'Assign to', dueDate:'Due date (optional)',
     save:'Save', createTask:'Create task', taskCreated:'Task created ✅', taskUpdated:'Task updated',
     needTitle:'Title is required',
@@ -490,7 +497,7 @@ const STR = {
     n_scheduled:' scheduled you: ', n_newAccount:'New account: ',
     confirmDelUser:'Delete', userDeletedMsg:'User deleted',
     cannotDeleteSelf:'You cannot delete your own account',
-    version:'GE Actividades · v1.8',
+    version:'GE Actividades · v1.9',
     openDay:'Open day', backToCal:'‹ Back to calendar',
     eventsForDay:'Events', noEvents:'No events this day.',
     newEvent:'New event', eventTitle:'Event (e.g. Harvest, Cutting, Drying)',
@@ -537,6 +544,34 @@ function assigneeNamesText(x) {
 function doneOn(x, ds) {
   if (Array.isArray(x.doneDates)) return x.doneDates.includes(ds);
   return x.status === 'done';
+}
+/* v1.9 task types: ongoing (daily) vs duration (deadline window) */
+function taskType(x) {
+  if (x.type === 'ongoing' || x.type === 'duration') return x.type;
+  return (x.dates && x.dates.length > 1) ? 'ongoing' : 'duration';
+}
+function typeTag(x) {
+  if (!(x.dates && x.dates.length > 1)) return '';
+  return taskType(x) === 'ongoing'
+    ? '<span class="type-tag t-daily">🔁 ' + t('typeDaily') + '</span>'
+    : '<span class="type-tag t-dur">⏳ ' + t('typeDuration') + '</span>';
+}
+function dayChecklistFor(t2, ds) {
+  if (taskType(t2) !== 'ongoing' || !Array.isArray(t2.checklist)) return t2.checklist || [];
+  const day = (t2.checkDone && t2.checkDone[ds]) || {};
+  return t2.checklist.map(c => {
+    const s = day[c.id];
+    return s ? Object.assign({}, c, { done: !!s.done, doneBy: s.by, doneAt: s.at, doneByName: s.by ? ((USERS.find(u2 => u2.id === s.by) || {}).name || '') : null })
+             : Object.assign({}, c, { done: false, doneBy: null, doneAt: null, doneByName: null });
+  });
+}
+function effDate(x) {
+  const today = new Date().toISOString().slice(0,10);
+  const ds = (x.dates && x.dates.length) ? x.dates : (x.due ? [x.due] : []);
+  if (ds.includes(today)) return today;
+  const fut = ds.filter(d => d > today);
+  if (fut.length) return fut[0];
+  return ds.length ? ds[ds.length - 1] : null;
 }
 /* date badge: single day, a consecutive run (first→last), or scattered days (first +N) */
 function datesBadge(x) {
@@ -858,7 +893,8 @@ function renderDaySummary(m) {
       '<div class="grow">' +
         '<div style="font-weight:700">' + esc(t2.title) + '</div>' +
         '<div class="meta-line">' + t('assignedTo2') + ' <b>' + esc(assigneeNamesText(t2)) + '</b>' + (mine ? ' ' + t('you') : '') + '</div>' +
-        '<div class="meta-line">' + t('createdFrom') + ' ' + esc(t2.createdByName) + ' · ' + fmtTs(t2.createdAt) + '</div>';
+        '<div class="meta-line">' + t('createdFrom') + ' ' + esc(t2.createdByName) + ' · ' + fmtTs(t2.createdAt) + '</div>' +
+      '<div class="meta-line">' + typeTag(t2) + '</div>';
     if (t2.status === 'done') {
       html += '<div class="meta-line" style="color:var(--ok)">' + t('completedAt') + ' ' + fmtTs(t2.completedAt) + ' ' + t('completedBy') + ' ' + esc(t2.completedByName||'—') + '</div>';
     }
@@ -952,14 +988,19 @@ function dayTaskCard(t2, ds) {
   const mine = isAssigned(t2, ME.id);
   const dayDone = doneOn(t2, ds);
   const ck = t2.checklist || [];
-  const ckDone = ck.filter(x => x.done).length;
+  const ongoing = taskType(t2) === 'ongoing';
+  const ckView = ongoing ? dayChecklistFor(t2, ds) : ck;
+  const ckDone = ckView.filter(x => x.done).length;
   let html = '<div class="row" style="align-items:flex-start">' +
     '<div class="prio p-' + esc(t2.priority) + '" style="margin-top:7px"></div>' +
     '<div class="grow">' +
       '<div style="font-weight:700">' + esc(t2.title) + '</div>' +
       '<div class="meta-line">' + t('assignedTo2') + ' <b>' + esc(assigneeNamesText(t2)) + '</b>' + (mine ? ' ' + t('you') : '') + '</div>' +
-      '<div class="meta-line">' + t('createdFrom') + ' ' + esc(t2.createdByName) + ' · ' + fmtTs(t2.createdAt) + '</div>';
-  if (dayDone) {
+      '<div class="meta-line">' + t('createdFrom') + ' ' + esc(t2.createdByName) + ' · ' + fmtTs(t2.createdAt) + '</div>' +
+      '<div class="meta-line">' + typeTag(t2) + '</div>';
+  if (dayDone && ongoing) {
+    html += '<div class="meta-line" style="color:var(--ok)">' + t('dayDone') + ' ✅</div>';
+  } else if (t2.status === 'done') {
     html += '<div class="meta-line" style="color:var(--ok)">' + t('completedAt') + ' ' + fmtTs(t2.completedAt) + ' ' + t('completedBy') + ' ' + esc(t2.completedByName||'—') + '</div>';
   }
   if (ck.length) {
@@ -969,8 +1010,8 @@ function dayTaskCard(t2, ds) {
   html += '</div><span class="badge ' + (dayDone ? 'b-done' : 'b-' + esc(t2.status)) + '">' + stEs(dayDone ? 'done' : t2.status) + '</span></div>';
   c.innerHTML = html;
 
-  // per-day done toggle (assignee or manager) — marks ONLY this date
-  if (isManager() || mine) {
+  // per-day done toggle (assignee or manager) — ongoing tasks only; duration is all-or-nothing
+  if ((isManager() || mine) && ongoing) {
     const dd = el('button','btn btn-sm ' + (dayDone ? 'btn-ghost' : 'btn-primary'), dayDone ? t('dayUndone') : t('dayDone'));
     dd.style.marginTop = '8px';
     dd.onclick = async () => {
@@ -986,7 +1027,7 @@ function dayTaskCard(t2, ds) {
 
   // checklist rows (always visible for assignee/manager — the working surface)
   if (ck.length && (isManager() || mine)) {
-    ck.forEach(item => c.appendChild(ckRow(t2, item, ds)));
+    ckView.forEach(item => c.appendChild(ckRow(t2, item, ds)));
   }
 
   // collapsible responses
@@ -1379,10 +1420,11 @@ function taskCard(x) {
         (x.desc ? '<div class="small muted" style="margin-top:3px;white-space:pre-wrap">' + esc(x.desc.length>140?x.desc.slice(0,140)+'…':x.desc) + '</div>' : '') +
         '<div class="row small muted" style="margin-top:8px;flex-wrap:wrap;gap:6px">' +
           '<span class="badge b-' + esc(x.status) + '">' + stEs(x.status) + '</span>' +
+          typeTag(x) +
           (x.createdByRole === 'employee' ? '<span>➕ ' + t('addedBy') + ' ' + esc(x.createdByName || '') + '</span>' : '') +
           (x.due ? '<span class="' + (isOverdue(x)?'overdue':'') + '">' + datesBadge(x) + ((Array.isArray(x.doneDates) && x.doneDates.length && Array.isArray(x.dates) && x.dates.length > 1) ? ' · ' + x.doneDates.length + '/' + x.dates.length + ' ' + t('daysDone') : '') + '</span>' : '') +
           (x.updateCount ? '<span>💬 ' + x.updateCount + '</span>' : '') +
-          (ck.length ? '<span>☑️ ' + ckDone + '/' + ck.length + '</span>' : '') +
+          (ck.length && !(taskType(x) === 'ongoing' && x.dates && x.dates.length > 1) ? '<span>☑️ ' + ckDone + '/' + ck.length + '</span>' : '') +
         '</div>' +
         '<div class="meta-line">👤 ' + esc(assigneeNamesText(x)) + (mine ? ' <b style="color:var(--brand)">' + t('you') + '</b>' : '') + '</div>' +
       '</div>' +
@@ -1465,13 +1507,16 @@ async function openTask(id) {
 
   // checklist (working surface): tap an item to toggle; auto-complete when all done
   const ck = x.checklist || [];
+  const ongoingX = taskType(x) === 'ongoing';
+  const effD = ongoingX ? effDate(x) : null;
+  const ckView = effD ? dayChecklistFor(x, effD) : ck;
   if (ck.length) {
-    const ckDone = ck.filter(i => i.done).length;
+    const ckDone = ckView.filter(i => i.done).length;
     const wrap = el('div');
-    wrap.appendChild(el('div','sect', t('checklist') + ' — ' + ckDone + '/' + ck.length));
+    wrap.appendChild(el('div','sect', t('checklist') + ' — ' + ckDone + '/' + ck.length + (effD ? ' · ' + fmtDateShort(effD) : '')));
     const bar = el('div','ckbar','<div style="width:' + Math.round(ckDone/ck.length*100) + '%"></div>');
     wrap.appendChild(bar);
-    ck.forEach(item => wrap.appendChild(ckRow(x, item)));
+    ckView.forEach(item => wrap.appendChild(ckRow(x, item, effD || undefined)));
     body.appendChild(wrap);
   }
 
@@ -1734,10 +1779,23 @@ function taskForm(existing, presetAssignee) {
       '<div class="small muted" style="margin-top:8px">' + t('pickDays') + '</div>' +
       '<div id="tf-cal"></div>' +
       '<div id="tf-sel" class="small" style="margin-top:4px;color:var(--brand);font-weight:600"></div></div>' +
+      '<div class="field" id="tf-type-wrap" style="display:none"><label>' + t('typeQ') + '</label>' +
+      '<div class="row" id="tf-type" style="flex-wrap:wrap">' +
+        '<button type="button" class="chip on" data-t="ongoing" style="margin:0 8px 8px 0">🔁 ' + t('typeDaily') + '</button>' +
+        '<button type="button" class="chip" data-t="duration" style="margin:0 8px 8px 0">⏳ ' + t('typeDuration') + '</button>' +
+      '</div>' +
+      '<div class="small muted">' + (LANG==='es'
+        ? 'Diaria: se repite cada día, cada día se marca aparte. Con plazo: una sola tarea con varios días para terminarla.'
+        : 'Daily: repeats each day, checked off day by day. Deadline: one task with several days to finish it.') + '</div></div>' +
       '<button class="btn btn-primary" id="tf-save">' + (isEdit ? t('save') : t('createTask')) + '</button>' +
     '</div>';
   sheet.querySelector('.x').onclick = () => ov.remove();
   sheet.querySelectorAll('#tf-assignees .chip').forEach(b => { b.onclick = () => b.classList.toggle('on'); });
+  // task type (only matters when the task spans several days)
+  let ttype = existing ? taskType(existing) : 'ongoing';
+  function paintType() { sheet.querySelectorAll('#tf-type .chip').forEach(b => b.classList.toggle('on', b.dataset.t === ttype)); }
+  sheet.querySelectorAll('#tf-type .chip').forEach(b => { b.onclick = () => { ttype = b.dataset.t; paintType(); }; });
+  paintType();
   ov.appendChild(sheet); document.body.appendChild(ov);
 
   /* --- checklist editor: rows with ☐ + input; Enter adds row, Backspace on empty removes --- */
@@ -1824,6 +1882,16 @@ function taskForm(existing, presetAssignee) {
   }
   drawCal(); drawSel();
   sheet.querySelector('#tf-due').addEventListener('change', drawSel);
+  // show the type picker only when the task spans more than one day
+  function updateTypeVis() {
+    const startD = sheet.querySelector('#tf-due').value;
+    const nDays = Math.max(1, parseInt(sheet.querySelector('#tf-days').value, 10) || 1);
+    const count = new Set([...selExtra, startD].filter(Boolean)).size + (startD ? nDays - 1 : 0);
+    sheet.querySelector('#tf-type-wrap').style.display = count > 1 ? '' : 'none';
+  }
+  sheet.querySelector('#tf-due').addEventListener('input', updateTypeVis);
+  sheet.querySelector('#tf-days').addEventListener('input', updateTypeVis);
+  updateTypeVis();
 
   sheet.querySelector('#tf-save').onclick = async () => {
     const lines = [...editor.querySelectorAll('input')].map(i => i.value.trim()).filter(Boolean);
@@ -1850,6 +1918,7 @@ function taskForm(existing, presetAssignee) {
       priority: sheet.querySelector('#tf-prio').value,
       due: dates[0] || null,
       dates,
+      type: dates.length > 1 ? ttype : undefined,
     };
     if (!payload.title) { toast(t('needTitle')); return; }
     if (!payload.assignees.length) { toast(t('needAssignee')); return; }
