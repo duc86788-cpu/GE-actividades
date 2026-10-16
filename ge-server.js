@@ -476,7 +476,6 @@ function parseChecklist(desc) {
 
 route('POST', /^\/api\/tasks$/, async (req, res, m, u) => {
   if (!u) return bad(res, 401, 'No autenticado');
-  if (!isManager(u)) return bad(res, 403, 'MANAGERS_ONLY');
   const body = await readJSON(req, 128 * 1024);
   const title = String(body.title || '').trim().slice(0, 120);
   const desc = String(body.desc || '').trim().slice(0, 4000);
@@ -485,13 +484,23 @@ route('POST', /^\/api\/tasks$/, async (req, res, m, u) => {
     ? [...new Set(body.assignees.map(x => String(x)))]
     : (body.assignee ? [String(body.assignee)] : []);
   assigneeIds = assigneeIds.slice(0, 20);
-  const priority = ['baja', 'normal', 'alta', 'urgente'].includes(body.priority) ? body.priority : 'normal';
-  const due = /^\d{4}-\d{2}-\d{2}$/.test(String(body.due || '')) ? body.due : null;
+  let priority = ['baja', 'normal', 'alta', 'urgente'].includes(body.priority) ? body.priority : 'normal';
+  let due = /^\d{4}-\d{2}-\d{2}$/.test(String(body.due || '')) ? body.due : null;
   // multi-date: array of valid YYYY-MM-DD (max 62 days), deduped; falls back to [due]
   let dates = Array.isArray(body.dates)
     ? [...new Set(body.dates.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(String(d))).map(d => String(d)).sort())].slice(0, 62)
     : [];
   if (!dates.length && due) dates = [due];
+  // v1.8: employees may ADD simple activities for themselves only —
+  // self-assigned, single date, normal priority. They still cannot edit or
+  // delete anything (PATCH/DELETE keep their manager/admin-only rules).
+  if (!isManager(u)) {
+    assigneeIds = [u.id];
+    if (dates.length > 1) dates = dates.slice(0, 1);
+    if (!dates.length) dates = [new Date().toISOString().slice(0, 10)];
+    due = dates[0];
+    priority = 'normal';
+  }
   if (!title) return bad(res, 400, 'NEED_TITLE');
   const targets = assigneeIds.map(id => data.users.find(x => x.id === id && x.active !== false));
   if (!targets.length || targets.some(x => !x)) return bad(res, 400, 'BAD_ASSIGNEE');
@@ -512,12 +521,14 @@ route('POST', /^\/api\/tasks$/, async (req, res, m, u) => {
 
 function withNames(t) {
   const ids = Array.isArray(t.assignees) ? t.assignees : (t.assignee ? [t.assignee] : []);
+  const cu = data.users.find(x => x.id === t.createdBy);
   return Object.assign({}, t, {
     assignees: ids,
     assignee: ids[0] || t.assignee || null,
     assigneeName: userName(ids[0] || t.assignee),
     assigneeNames: ids.map(userName),
     createdByName: userName(t.createdBy),
+    createdByRole: cu ? cu.role : null,
     completedByName: t.completedBy ? userName(t.completedBy) : null,
     updateCount: data.updates.filter(x => x.taskId === t.id).length,
   });
@@ -1009,7 +1020,7 @@ route('GET', /^\/api\/events$/, async (req, res, m, u) => {
 });
 
 route('GET', /^\/api\/health$/, async (req, res) => {
-  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.9', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
+  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.8', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
 });
 
 /* ------------------------------------------------------------- server -- */
