@@ -530,14 +530,16 @@ function migrateTask(t) {
   if (t.type === 'ongoing') {
     if (!t.checkDone) t.checkDone = {};
     const ds = taskDatesOf(t);
-    if (!Array.isArray(t.doneDates)) t.doneDates = (t.status === 'done') ? ds.slice() : [];
-    // keep history: days already marked done get their checklist seeded as done
-    (t.checklist || []).forEach(c => {
-      if (c.done) ds.forEach(d => {
-        t.checkDone[d] = t.checkDone[d] || {};
-        if (!t.checkDone[d][c.id]) t.checkDone[d][c.id] = { done: true, by: c.doneBy || null, at: c.doneAt || null };
+    // seed per-day checklist history ONCE, only for days already marked done
+    if (!Array.isArray(t.doneDates)) {
+      t.doneDates = (t.status === 'done') ? ds.slice() : [];
+      (t.checklist || []).forEach(c => {
+        if (c.done) t.doneDates.forEach(d => {
+          t.checkDone[d] = t.checkDone[d] || {};
+          if (!t.checkDone[d][c.id]) t.checkDone[d][c.id] = { done: true, by: c.doneBy, at: c.doneAt };
+        });
       });
-    });
+    }
   }
   return t;
 }
@@ -599,6 +601,31 @@ function migrateTypesV3() {
   });
   data.meta = data.meta || {};
   data.meta.migV = 3;
+}
+
+/* v2.0.1 data cleanup: a day's checkmarks only count if they were actually
+   made on THAT day. Removes copied-over marks (timestamps from another day)
+   on days that were never marked done. */
+function migrateTypesV4() {
+  if (data.meta && data.meta.migV >= 4) return;
+  (data.tasks || []).forEach(t => {
+    if (t.type !== 'ongoing' || !t.checkDone) return;
+    const ds = taskDatesOf(t);
+    const done = Array.isArray(t.doneDates) ? t.doneDates : [];
+    Object.keys(t.checkDone).forEach(d => {
+      if (done.includes(d)) return;
+      if (!ds.includes(d)) { delete t.checkDone[d]; return; }
+      const entries = t.checkDone[d] || {};
+      const keys = Object.keys(entries);
+      const real = keys.some(k => entries[k] && entries[k].at && String(entries[k].at).slice(0, 10) === d);
+      if (keys.length && !real) {
+        delete t.checkDone[d];
+        console.log('[mig4] ' + t.title + ': cleared copied marks on ' + d);
+      }
+    });
+  });
+  data.meta = data.meta || {};
+  data.meta.migV = 4;
 }
 
 function withNames(t) {
@@ -863,7 +890,8 @@ route('POST', /^\/api\/tasks\/([a-z0-9]+)\/updates$/, async (req, res, m, u) => 
   const text = String(body.text || '').trim().slice(0, 2000);
   const photos = Array.isArray(body.photos) ? body.photos.filter(p => typeof p === 'string' && p.startsWith('/files/')).slice(0, 20) : [];
   const videos = Array.isArray(body.videos) ? body.videos.filter(v => typeof v === 'string' && v.startsWith('/files/')).slice(0, 3) : [];
-  const replyTo = typeof body.replyTo === 'string' ? body.replyTo.slice(0, 24) : null;
+  const replyToRaw = typeof body.replyTo === 'string' ? body.replyTo.slice(0, 24) : null;
+  const replyTo = replyToRaw && data.updates.some(x => x.id === replyToRaw && x.taskId === t.id) ? replyToRaw : null;
   const checkId = typeof body.checkId === 'string' && (t.checklist || []).some(c => c.id === body.checkId) ? body.checkId : null;
   const photo = typeof body.photo === 'string' && body.photo.startsWith('/files/') ? body.photo : (photos[0] || null);
   if (isManager(u) && !text && !photos.length && !videos.length) return bad(res, 400, 'NEED_TEXT');
@@ -1135,7 +1163,7 @@ route('GET', /^\/api\/events$/, async (req, res, m, u) => {
 });
 
 route('GET', /^\/api\/health$/, async (req, res) => {
-  send(res, 200, { ok: true, app: 'GE Actividades', version: '2.0', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
+  send(res, 200, { ok: true, app: 'GE Actividades', version: '2.1', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
 });
 
 /* ------------------------------------------------------------- server -- */
@@ -1535,6 +1563,7 @@ async function main() {
   data.tasks.forEach(migrateTask); // v1.9: assign types to pre-existing tasks
   migrateTypesV2();                // v1.9.1: undo old "done everywhere" carry-over
   migrateTypesV3();                // v2.0: out-of-range done days + duration done records
+  migrateTypesV4();                // v2.0.1: copied checkmarks on days never worked
   save();                          // persist migration markers immediately
   loadSessions();
   bootstrapSeed();
