@@ -573,6 +573,34 @@ function migrateTypesV2() {
   data.meta.migV = 2;
 }
 
+/* v2.0 data cleanup: (a) drop done-marks for days that are no longer part of
+   a renewing task (left over from edits under the old rules); (b) give done
+   duration tasks a per-day record pointing at the day they were completed. */
+function migrateTypesV3() {
+  if (data.meta && data.meta.migV >= 3) return;
+  (data.tasks || []).forEach(t => {
+    if (t.type === 'ongoing') {
+      const ds = taskDatesOf(t);
+      if (Array.isArray(t.doneDates) && t.doneDates.some(d => !ds.includes(d))) {
+        const dropped = t.doneDates.filter(d => !ds.includes(d));
+        t.doneDates = t.doneDates.filter(d => ds.includes(d));
+        dropped.forEach(d => { if (t.checkDone) delete t.checkDone[d]; });
+        console.log('[mig3] ' + t.title + ': dropped out-of-range day(s) ' + JSON.stringify(dropped));
+      }
+    }
+    if (t.type === 'duration' && t.status === 'done') {
+      const ds2 = taskDatesOf(t);
+      if (!Array.isArray(t.doneDates) || !t.doneDates.length) {
+        const cd = (t.completedAt || '').slice(0, 10);
+        t.doneDates = (cd && ds2.includes(cd)) ? [cd] : [];
+        if (t.doneDates.length) console.log('[mig3] ' + t.title + ': done record -> ' + JSON.stringify(t.doneDates));
+      }
+    }
+  });
+  data.meta = data.meta || {};
+  data.meta.migV = 3;
+}
+
 function withNames(t) {
   const ids = Array.isArray(t.assignees) ? t.assignees : (t.assignee ? [t.assignee] : []);
   const cu = data.users.find(x => x.id === t.createdBy);
@@ -634,7 +662,7 @@ function syncChecklistStatus(t, actor, viewDate) {
   if (allDone && t.status !== 'done') {
     t.status = 'done'; t.completedAt = nowISO(); t.completedBy = actor.id;
     const ds = taskDatesOf(t);
-    if (ds.length) t.doneDates = ds.slice(); // finished early → remaining days show done
+    if (ds.length) t.doneDates = [new Date().toISOString().slice(0, 10)]; // v2.0: completion belongs to its own day
     logEvent('task_completed', actor.id, { taskId: t.id, taskTitle: t.title, viaChecklist: true });
     if (t.createdBy && t.createdBy !== actor.id) {
       emitEvent('task.completed', { title: t.title, taskId: t.id, by: actor.name, at: t.completedAt },
@@ -690,7 +718,7 @@ route('PATCH', /^\/api\/tasks\/([a-z0-9]+)$/, async (req, res, m, u) => {
       t.completedBy = u.id;
       if (t.type !== 'ongoing') {
         const ds = taskDatesOf(t);
-        if (ds.length) t.doneDates = ds.slice(); // duration: finishing closes every day
+        if (ds.length) t.doneDates = [new Date().toISOString().slice(0, 10)]; // v2.0: completion belongs to its own day
       }
       logEvent('task_completed', u.id, { taskId: t.id, taskTitle: t.title });
       // notify the creator (not the actor): who completed + exact time
@@ -1107,7 +1135,7 @@ route('GET', /^\/api\/events$/, async (req, res, m, u) => {
 });
 
 route('GET', /^\/api\/health$/, async (req, res) => {
-  send(res, 200, { ok: true, app: 'GE Actividades', version: '1.9.1', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
+  send(res, 200, { ok: true, app: 'GE Actividades', version: '2.0', time: nowISO(), users: data.users.length, tasks: data.tasks.length });
 });
 
 /* ------------------------------------------------------------- server -- */
@@ -1506,6 +1534,7 @@ async function main() {
   if (BACKUP_TOKEN) await restoreWithRetry();
   data.tasks.forEach(migrateTask); // v1.9: assign types to pre-existing tasks
   migrateTypesV2();                // v1.9.1: undo old "done everywhere" carry-over
+  migrateTypesV3();                // v2.0: out-of-range done days + duration done records
   save();                          // persist migration markers immediately
   loadSessions();
   bootstrapSeed();
