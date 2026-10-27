@@ -408,7 +408,7 @@ const STR = {
     n_scheduled:' te agendó: ', n_newAccount:'Nueva cuenta: ',
     confirmDelUser:'¿Eliminar a', userDeletedMsg:'Usuario eliminado',
     cannotDeleteSelf:'No puedes eliminar tu propia cuenta',
-    version:'GE Actividades · v1.9.1',
+    version:'GE Actividades · v2.0',
     openDay:'Abrir el día', backToCal:'‹ Volver al calendario',
     eventsForDay:'Eventos', noEvents:'Sin eventos este día.',
     newEvent:'Nuevo evento', eventTitle:'Evento (ej. Cosecha, Corte, Secado)',
@@ -497,7 +497,7 @@ const STR = {
     n_scheduled:' scheduled you: ', n_newAccount:'New account: ',
     confirmDelUser:'Delete', userDeletedMsg:'User deleted',
     cannotDeleteSelf:'You cannot delete your own account',
-    version:'GE Actividades · v1.9.1',
+    version:'GE Actividades · v2.0',
     openDay:'Open day', backToCal:'‹ Back to calendar',
     eventsForDay:'Events', noEvents:'No events this day.',
     newEvent:'New event', eventTitle:'Event (e.g. Harvest, Cutting, Drying)',
@@ -543,6 +543,8 @@ function assigneeNamesText(x) {
 /* was a task done on this specific date? (per-day completion; legacy tasks fall back to whole-task status) */
 function doneOn(x, ds) {
   if (Array.isArray(x.doneDates)) return x.doneDates.includes(ds);
+  const ds2 = (x.dates && x.dates.length) ? x.dates : (x.due ? [x.due] : []);
+  if (ds2.length > 1) return false; // multi-day without per-day record: that day has no done mark
   return x.status === 'done';
 }
 /* v1.9 task types: ongoing (daily) vs duration (deadline window) */
@@ -820,7 +822,7 @@ function renderCalendar(m) {
   const dayMap = {};
   TASKS.forEach(t2 => {
     const days = (Array.isArray(t2.dates) && t2.dates.length) ? t2.dates : (t2.due ? [t2.due] : []);
-    days.forEach(d => { dayMap[d] = dayMap[d] || {}; if (doneOn(t2, d)) dayMap[d].done = true; else dayMap[d].task = true; });
+    days.forEach(d => { if (!inDayView(t2, d)) return; dayMap[d] = dayMap[d] || {}; if (doneOn(t2, d)) dayMap[d].done = true; else dayMap[d].task = true; });
   });
   MILES.forEach(mi => { dayMap[mi.date] = dayMap[mi.date] || {}; dayMap[mi.date].ev = true; });
 
@@ -863,6 +865,17 @@ function taskOnDate(x, ds) {
   if (Array.isArray(x.dates) && x.dates.length) return x.dates.includes(ds);
   return x.due === ds;
 }
+/* v2.0: a day shows ONLY that day's own truth. Renewing tasks appear every
+   assigned day (per-day state); a finished non-renewing task appears only on
+   the day it was actually completed — never carried to other days. */
+function inDayView(x, ds) {
+  if (!taskOnDate(x, ds)) return false;
+  if (taskType(x) === 'duration' && x.status === 'done') {
+    const cd = (x.completedAt || '').slice(0, 10) || ((x.dates && x.dates.length) ? x.dates[x.dates.length - 1] : x.due);
+    return cd === ds;
+  }
+  return true;
+}
 function visibleTasks() {
   const list = onlyMine ? TASKS.filter(x => isAssigned(x, ME.id) || x.createdBy === ME.id) : TASKS;
   return list;
@@ -871,7 +884,7 @@ function visibleTasks() {
 /* Quick list of the selected day at the bottom of the homepage (single tap) */
 function renderDaySummary(m) {
   const ds = calSelected;
-  const dayTasks = visibleTasks().filter(t2 => taskOnDate(t2, ds));
+  const dayTasks = visibleTasks().filter(t2 => inDayView(t2, ds));
   const dayEvs = MILES.filter(mi => mi.date === ds);
   if (!dayTasks.length && !dayEvs.length) {
     m.appendChild(el('div','small muted', fmtDate(ds) + ' · ' + t('noTasks')));
@@ -941,7 +954,7 @@ function renderDayView(m) {
   }
 
   // Tasks with collapsible responses
-  const dayTasks = visibleTasks().filter(t2 => taskOnDate(t2, ds));
+  const dayTasks = visibleTasks().filter(t2 => inDayView(t2, ds));
   m.appendChild(el('div','sect', t('tasksForDay')));
   if (!dayTasks.length) {
     m.appendChild(el('div','small muted', t('noTasks')));
