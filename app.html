@@ -179,6 +179,9 @@
   .tl-task{border-left:3px solid var(--brand);padding-left:12px}
   .tl-ev{border-left:3px solid #7c3aed;padding-left:12px}
 
+  .up.reply, .upd.reply { }
+  .cmt-compose { margin:6px 0 10px 22px; display:flex; flex-direction:column; gap:6px; }
+  .cmt-reply { color:var(--brand); font-weight:600; cursor:pointer; }
   /* collapsible responses in day view */
   .resp-toggle{cursor:pointer}
   .resp-wrap{overflow:hidden;transition:max-height .25s ease;max-height:0}
@@ -408,7 +411,7 @@ const STR = {
     n_scheduled:' te agendó: ', n_newAccount:'Nueva cuenta: ',
     confirmDelUser:'¿Eliminar a', userDeletedMsg:'Usuario eliminado',
     cannotDeleteSelf:'No puedes eliminar tu propia cuenta',
-    version:'GE Actividades · v2.0',
+    version:'GE Actividades · v2.1',
     openDay:'Abrir el día', backToCal:'‹ Volver al calendario',
     eventsForDay:'Eventos', noEvents:'Sin eventos este día.',
     newEvent:'Nuevo evento', eventTitle:'Evento (ej. Cosecha, Corte, Secado)',
@@ -497,7 +500,7 @@ const STR = {
     n_scheduled:' scheduled you: ', n_newAccount:'New account: ',
     confirmDelUser:'Delete', userDeletedMsg:'User deleted',
     cannotDeleteSelf:'You cannot delete your own account',
-    version:'GE Actividades · v2.0',
+    version:'GE Actividades · v2.1',
     openDay:'Open day', backToCal:'‹ Back to calendar',
     eventsForDay:'Events', noEvents:'No events this day.',
     newEvent:'New event', eventTitle:'Event (e.g. Harvest, Cutting, Drying)',
@@ -1066,21 +1069,9 @@ function dayTaskCard(t2, ds) {
 }
 
 async function fillResponses(wrap, taskId) {
-  wrap.innerHTML = '<div class="small muted" style="padding:6px 0">…</div>';
-  try {
-    const d = await api('/api/tasks/' + taskId);
-    wrap.innerHTML = '';
-    if (!d.updates.length) wrap.appendChild(el('div','small muted', '—'));
-    d.updates.forEach(u2 => {
-      const r = el('div','upd');
-      r.innerHTML = '<div class="avatar">' + esc(initials(u2.authorName)) + '</div>' +
-        '<div class="bubble"><div class="small"><b>' + esc(u2.authorName) + '</b> <span class="muted">· ' + fmtTs(u2.ts) + '</span></div>' +
-        (u2.text ? '<div style="white-space:pre-wrap;margin-top:2px">' + esc(u2.text) + '</div>' : '') +
-        ((u2.photos||[]).length ? '<div class="multiPrev">' + u2.photos.map(p => '<img loading="lazy" src="' + esc(p) + '">').join('') + '</div>' : '') +
-        '</div>';
-      wrap.appendChild(r);
-    });
-  } catch(e) { wrap.innerHTML = ''; wrap.appendChild(el('div','small muted', e.message)); }
+  const t2 = TASKS.find(x => x.id === taskId);
+  const canPost = isManager() || (t2 && isAssigned(t2, ME.id));
+  commentThread(wrap, taskId, canPost);
 }
 
 /* checklist row with live toggle — checkmark appears instantly, server confirms after */
@@ -1493,6 +1484,83 @@ function openQuickReply(x) {
   };
 }
 
+/* ---------- comment threads: tap ↩ Reply on any comment to answer it (v2.1) ---------- */
+function commentThread(container, taskId, canPost) {
+  loadComments();
+  async function loadComments() {
+    let d;
+    try { d = await api('/api/tasks/' + taskId); }
+    catch(e) { container.innerHTML = ''; container.appendChild(el('div','small muted', e.message)); return; }
+    const all = d.updates || [];
+    const byId = {}; all.forEach(u => { byId[u.id] = u; });
+    const rootOf = u => { let cur = u, guard = 0; while (cur.replyTo && byId[cur.replyTo] && guard++ < 10) cur = byId[cur.replyTo]; return cur.id; };
+    const roots = [], kids = {};
+    all.forEach(u => {
+      if (u.replyTo && byId[u.replyTo]) { const r2 = rootOf(u); (kids[r2] = kids[r2] || []).push(u); }
+      else roots.push(u);
+    });
+    const renderOne = (u, depth) => {
+      const r = el('div','upd' + (depth ? ' reply' : ''));
+      if (depth) r.style.marginLeft = '22px';
+      const rx = Object.entries(u.reactions || {}).map(([em, ids]) => em + (ids.length > 1 ? ids.length : '')).join(' ');
+      r.innerHTML = '<div class="avatar">' + esc(initials(u.authorName)) + '</div>' +
+        '<div class="bubble"><div class="small"><b>' + esc(u.authorName) + '</b> <span class="muted">· ' + fmtTs(u.ts) + '</span></div>' +
+        (u.text ? '<div style="white-space:pre-wrap;margin-top:2px">' + esc(u.text) + '</div>' : '') +
+        ((u.photos||[]).length ? '<div class="multiPrev">' + u.photos.map(p => '<img loading="lazy" src="' + esc(p) + '">').join('') + '</div>' : '') +
+        ((u.videos||[]).length ? u.videos.map(v => '<video src="' + esc(v) + '" controls preload="metadata" style="width:100%;max-height:280px;border-radius:10px;margin-top:6px"></video>').join('') : '') +
+        (rx ? '<div class="small" style="margin-top:4px">' + esc(rx) + '</div>' : '') +
+        (canPost ? '<div class="row small" style="gap:10px;margin-top:4px"><span class="lnk cmt-reply">↩︎ ' + t('replyTo') + '</span></div>' : '') +
+        '</div>';
+      if (canPost) r.querySelector('.cmt-reply').onclick = () => openReply(u, r);
+      return r;
+    };
+    const draw = () => {
+      container.innerHTML = '';
+      container.appendChild(el('div','sect', t('updates') + ' (' + all.length + ')'));
+      if (!all.length) container.appendChild(el('div','small muted','—'));
+      roots.forEach(root => {
+        container.appendChild(renderOne(root, 0));
+        (kids[root.id] || []).forEach(ch => container.appendChild(renderOne(ch, 1)));
+      });
+    };
+    draw();
+    function openReply(u, rowEl) {
+      const old = container.querySelector('.cmt-compose'); if (old) old.remove();
+      const comp = el('div','cmt-compose');
+      if (u.replyTo && byId[u.replyTo]) comp.style.marginLeft = '22px'; else comp.style.marginLeft = '22px';
+      const ta = el('textarea'); ta.placeholder = t('replyTo') + ' · ' + u.authorName + '…'; ta.rows = 2; ta.style.width = '100%';
+      let phots = [];
+      const prev = el('div','multiPrev');
+      const camB = el('button','btn btn-ghost btn-sm', t('camera'));
+      const galB = el('button','btn btn-ghost btn-sm', t('gallery'));
+      const sendB = el('button','btn btn-primary btn-sm', t('send'));
+      camB.onclick = () => openCamera(async du => {
+        if (phots.length >= 20) { toast('20 max'); return; }
+        try { const r2 = await api('/api/upload', {method:'POST', body:JSON.stringify({dataUrl:du})}); phots.push(r2.url); drawPrev(); } catch(e3) { toast(e3.message); }
+      });
+      galB.onclick = () => pickPhotos(urls => { urls.forEach(x2 => { if (phots.length < 20) phots.push(x2); }); drawPrev(); });
+      function drawPrev() {
+        prev.innerHTML = '';
+        phots.forEach((p, i) => { const s = el('div','shotPrev','<img src="' + esc(p) + '">'); const xx = el('button','x','✕'); xx.onclick = () => { phots.splice(i,1); drawPrev(); }; s.appendChild(xx); prev.appendChild(s); });
+      }
+      const rowE = el('div','row'); rowE.append(camB, galB, sendB);
+      comp.append(ta, prev, rowE);
+      rowEl.after(comp);
+      try { ta.focus(); } catch(e3) {}
+      sendB.onclick = async () => {
+        const text = ta.value.trim();
+        if (!text && !phots.length) { toast(t('writeSomething')); return; }
+        sendB.disabled = true;
+        try {
+          // replying to a reply threads under the same root comment
+          await api('/api/tasks/' + taskId + '/updates', {method:'POST', body:JSON.stringify({text, photos:phots, replyTo: rootOf(u)})});
+          comp.remove(); loadComments(); refreshAll();
+        } catch(e3) { toast(e3.message); sendB.disabled = false; }
+      };
+    }
+  }
+}
+
 /* ---------- task detail ---------- */
 async function openTask(id) {
   let d;
@@ -1578,21 +1646,11 @@ async function openTask(id) {
     body.appendChild(row);
   }
 
-  // updates
-  body.appendChild(el('div','sect', t('updates') + ' (' + updates.length + ')'));
-  if (!updates.length) body.appendChild(el('div','small muted','—'));
-  updates.forEach(u => {
-    const d2 = el('div','upd');
-    d2.innerHTML = '<div class="avatar">' + esc(initials(u.authorName)) + '</div>' +
-      '<div class="bubble"><div class="small"><b>' + esc(u.authorName) + '</b> <span class="muted">· ' + fmtTs(u.ts) + '</span></div>' +
-      (u.text ? '<div style="white-space:pre-wrap;margin-top:2px">' + esc(u.text) + '</div>' : '') +
-      ((u.photos||[]).length ? '<div class="multiPrev">' + u.photos.map(p => '<img loading="lazy" src="' + esc(p) + '">').join('') + '</div>' : '') +
-      '</div>';
-    body.appendChild(d2);
-  });
-
-  // add update — all roles; photos via camera or gallery, up to 20 at once
+  // updates (comment thread — tap ↩ Reply on a comment to answer it)
   const canUpdate = manager || mine;
+  const updWrap = el('div');
+  body.appendChild(updWrap);
+  commentThread(updWrap, x.id, canUpdate);
   if (canUpdate) {
     body.appendChild(el('div','sect', t('addUpdate')));
     const ta = el('textarea'); ta.placeholder = manager ? t('phAdminComment') : t('phEmployee');
